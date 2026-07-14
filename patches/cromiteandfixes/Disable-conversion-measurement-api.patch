@@ -1,0 +1,400 @@
+From: uazo <uazo@users.noreply.github.com>
+Date: Mon, 15 Nov 2021 09:43:29 +0000
+Subject: Disable conversion measurement api
+
+Disable Conversion Measurement API by disabling the flag and removing
+support for the AttributionReporting provider. it also removes
+the handling of attributions via intents between apps.
+This patch enforces the deactivation by preventing the report from
+being sent and being saved to disk, although it is currently in uncalled code.
+
+Original License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+License: GPL-3.0-only - https://spdx.org/licenses/GPL-3.0-only.html
+---
+--- a/chrome/browser/resources/settings/privacy_page/privacy_page_index.html
++++ b/chrome/browser/resources/settings/privacy_page/privacy_page_index.html
+@@ -172,15 +172,6 @@
+   </template>
+ 
+   <template is="dom-if" if="[[renderView_(
+-      routes_.SITE_SETTINGS_AUTO_VERIFY, currentRoute, inSearchMode)]]"
+-      update-when-false>
+-    <settings-anti-abuse-page slot="view" id="siteSettingsAutoVerify"
+-        data-parent-view-id="privacy"
+-        route-path$="[[routes_.SITE_SETTINGS_AUTO_VERIFY.path]]">
+-    </settings-anti-abuse-page>
+-  </template>
+-
+-  <template is="dom-if" if="[[renderView_(
+       routes_.SITE_SETTINGS_AUTO_PICTURE_IN_PICTURE, currentRoute,
+       inSearchMode)]]" update-when-false>
+     <settings-auto-picture-in-picture-page slot="view"
+--- a/chrome/browser/resources/settings/route.ts
++++ b/chrome/browser/resources/settings/route.ts
+@@ -78,7 +78,7 @@ function addPrivacyChildRoutes(r: Partia
+     r.SITE_SETTINGS_WEB_PRINTING = r.SITE_SETTINGS.createChild('webPrinting');
+   }
+   // </if>
+-  r.SITE_SETTINGS_AUTO_VERIFY = r.SITE_SETTINGS.createChild('autoVerify');
++  // r.SITE_SETTINGS_AUTO_VERIFY = r.SITE_SETTINGS.createChild('autoVerify');
+   r.SITE_SETTINGS_BACKGROUND_SYNC =
+       r.SITE_SETTINGS.createChild('backgroundSync');
+   r.SITE_SETTINGS_CAMERA = r.SITE_SETTINGS.createChild('camera');
+--- a/chrome/browser/resources/settings/site_settings/site_settings_page.ts
++++ b/chrome/browser/resources/settings/site_settings/site_settings_page.ts
+@@ -67,6 +67,7 @@ function getCategoryItemMap(): Map<Conte
+       route: routes.SITE_SETTINGS_AUTO_VERIFY,
+       id: Id.ANTI_ABUSE,
+       label: 'siteSettingsAntiAbuse',
++      shouldShow: () => false,
+       icon: 'privacy20:person-check',
+       enabledLabel: 'siteSettingsAntiAbuseEnabledSubLabel',
+       disabledLabel: 'siteSettingsAntiAbuseDisabledSubLabel',
+--- a/components/attribution_reporting/aggregatable_trigger_config.cc
++++ b/components/attribution_reporting/aggregatable_trigger_config.cc
+@@ -102,7 +102,7 @@ bool IsValid(SourceRegistrationTimeConfi
+ 
+ base::expected<std::optional<std::string>, TriggerRegistrationError>
+ ParseTriggerContextId(base::Value* value) {
+-  if (!value) {
++  if ((true)) {
+     return std::nullopt;
+   }
+ 
+--- a/components/attribution_reporting/features.cc
++++ b/components/attribution_reporting/features.cc
+@@ -11,4 +11,5 @@ namespace attribution_reporting::feature
+ // Controls whether the Conversion Measurement API infrastructure is enabled.
+ BASE_FEATURE(kConversionMeasurement, base::FEATURE_ENABLED_BY_DEFAULT);
+ 
++SET_CROMITE_FEATURE_DISABLED(kConversionMeasurement);
+ }  // namespace attribution_reporting::features
+--- a/components/content_settings/core/browser/content_settings_registry.cc
++++ b/components/content_settings/core/browser/content_settings_registry.cc
+@@ -639,7 +639,7 @@ void ContentSettingsRegistry::Init() {
+            ContentSettingsInfo::INHERIT_IN_INCOGNITO,
+            PermissionSettingsInfo::EXCEPTIONS_ON_SECURE_ORIGINS_ONLY);
+ 
+-  Register(ContentSettingsType::ANTI_ABUSE, "anti-abuse", CONTENT_SETTING_ALLOW,
++  Register(ContentSettingsType::ANTI_ABUSE, "anti-abuse", CONTENT_SETTING_BLOCK,
+            WebsiteSettingsInfo::SYNCABLE,
+            /*allowlisted_primary_schemes=*/{},
+            /*valid_settings=*/{CONTENT_SETTING_ALLOW, CONTENT_SETTING_BLOCK},
+--- a/components/embedder_support/origin_trials/features.cc
++++ b/components/embedder_support/origin_trials/features.cc
+@@ -15,4 +15,5 @@ namespace embedder_support {
+ // from the origin trial.
+ BASE_FEATURE(kOriginTrialsSampleAPIThirdPartyAlternativeUsage,
+              base::FEATURE_ENABLED_BY_DEFAULT);
++SET_CROMITE_FEATURE_DISABLED(kOriginTrialsSampleAPIThirdPartyAlternativeUsage);
+ }  // namespace embedder_support
+--- a/components/renderer_context_menu/render_view_context_menu_base.cc
++++ b/components/renderer_context_menu/render_view_context_menu_base.cc
+@@ -546,9 +546,6 @@ RenderViewContextMenuBase::GetOpenURLPar
+ 
+   open_url_params.source_site_instance = site_instance_;
+ 
+-  if (disposition != WindowOpenDisposition::OFF_THE_RECORD)
+-    open_url_params.impression = params_.impression;
+-
+   return open_url_params;
+ }
+ 
+--- a/content/browser/aggregation_service/aggregatable_report_sender.cc
++++ b/content/browser/aggregation_service/aggregatable_report_sender.cc
+@@ -192,13 +192,8 @@ void AggregatableReportSender::SendRepor
+   // Allow bodies of non-2xx responses to be returned.
+   simple_url_loader_ptr->SetAllowHttpErrorResults(true);
+ 
+-  // Unretained is safe because the URLLoader is owned by `this` and will be
+-  // deleted before `this`.
+-  simple_url_loader_ptr->DownloadHeadersOnly(
+-      url_loader_factory_.get(),
+-      base::BindOnce(&AggregatableReportSender::OnReportSent,
+-                     base::Unretained(this), std::move(it), std::move(callback),
+-                     delay_type, std::move(serialized_url)));
++  // this is never called on Bromite but nothing would be sent if it were
++  OnReportSent(std::move(it), std::move(callback), delay_type, std::move(serialized_url), nullptr);
+ }
+ 
+ void AggregatableReportSender::OnReportSent(
+@@ -206,7 +201,11 @@ void AggregatableReportSender::OnReportS
+     ReportSentCallback callback,
+     std::optional<DelayType> delay_type,
+     std::string serialized_url,
+-    scoped_refptr<net::HttpResponseHeaders> headers) {
++    scoped_refptr<net::HttpResponseHeaders> headers) { // disable in Bromite
++  if ((true)) {
++    std::move(callback).Run(RequestStatus::kOk);
++    return;
++  }
+   std::optional<int> http_response_code;
+   if (headers) {
+     http_response_code = headers->response_code();
+--- a/content/browser/attribution_reporting/attribution_data_host_manager_impl.cc
++++ b/content/browser/attribution_reporting/attribution_data_host_manager_impl.cc
+@@ -787,11 +787,9 @@ class AttributionDataHostManagerImpl::Pe
+         headers->GetNormalizedHeader(
+             attribution_reporting::kAttributionReportingRegisterTriggerHeader);
+ 
+-    std::optional<std::string> os_source_header = headers->GetNormalizedHeader(
+-        attribution_reporting::kAttributionReportingRegisterOsSourceHeader);
++    std::optional<std::string> os_source_header;
+ 
+-    std::optional<std::string> os_trigger_header = headers->GetNormalizedHeader(
+-        attribution_reporting::kAttributionReportingRegisterOsTriggerHeader);
++    std::optional<std::string> os_trigger_header;
+ 
+     const bool has_source =
+         web_source_header.has_value() || os_source_header.has_value();
+@@ -1143,6 +1141,8 @@ void AttributionDataHostManagerImpl::Par
+     Registrations& registrations,
+     HeaderPendingDecode pending_decode,
+     Registrar registrar) {
++  if ((true)) return;
++
+   switch (registrations.eligibility()) {
+     case RegistrationEligibility::kSourceOrTrigger:
+       break;
+--- a/content/browser/attribution_reporting/attribution_host.cc
++++ b/content/browser/attribution_reporting/attribution_host.cc
+@@ -135,8 +135,6 @@ AttributionHost::AttributionHost(WebCont
+   // AttributionInputEventTrackerAndroid without a native view will crash. For
+   // now, just disable this code if the view is null.
+   if (web_contents->GetNativeView()) {
+-    input_event_tracker_android_ =
+-        std::make_unique<AttributionInputEventTrackerAndroid>(web_contents);
+   }
+ #endif
+ }
+@@ -346,6 +344,7 @@ void AttributionHost::NotifyNavigationRe
+     return;
+   }
+ 
++  if ((true)) return;
+   auto* attribution_manager =
+       AttributionManager::FromWebContents(web_contents());
+   CHECK(attribution_manager);
+--- a/content/browser/attribution_reporting/attribution_manager_impl.cc
++++ b/content/browser/attribution_reporting/attribution_manager_impl.cc
+@@ -523,11 +523,7 @@ bool IsOperationAllowed(
+ }
+ 
+ std::unique_ptr<AttributionOsLevelManager> CreateOsLevelManager() {
+-#if BUILDFLAG(IS_ANDROID)
+-  return std::make_unique<AttributionOsLevelManagerAndroid>();
+-#else
+   return std::make_unique<NoOpAttributionOsLevelManager>();
+-#endif
+ }
+ 
+ base::Time GetReportExpiryTime(const AttributionReport& report) {
+--- a/content/browser/attribution_reporting/attribution_os_level_manager.cc
++++ b/content/browser/attribution_reporting/attribution_os_level_manager.cc
+@@ -46,6 +46,7 @@ std::optional<ApiState> g_state GUARDED_
+ 
+ // static
+ bool AttributionOsLevelManager::ShouldInitializeApiState() {
++  if ((true)) return false;
+   DCHECK_CALLED_ON_VALID_SEQUENCE(GetSequenceChecker());
+   if (g_state.has_value()) {
+     return false;
+@@ -57,7 +58,7 @@ bool AttributionOsLevelManager::ShouldIn
+ // static
+ ApiState AttributionOsLevelManager::GetApiState() {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(GetSequenceChecker());
+-  return g_state.value_or(ApiState::kDisabled);
++  return ApiState::kDisabled;
+ }
+ 
+ // static
+--- a/content/browser/attribution_reporting/attribution_report_network_sender.cc
++++ b/content/browser/attribution_reporting/attribution_report_network_sender.cc
+@@ -117,6 +117,9 @@ void AttributionReportNetworkSender::Sen
+                                                 url::Origin origin,
+                                                 std::string body,
+                                                 UrlLoaderCallback callback) {
++  // this is never called on Bromite but nothing would be sent if it were
++  if ((true)) return;
++
+   auto resource_request = std::make_unique<network::ResourceRequest>();
+   resource_request->url = std::move(url);
+   resource_request->method = net::HttpRequestHeaders::kPostMethod;
+@@ -192,6 +195,12 @@ void AttributionReportNetworkSender::OnR
+     ReportSentCallback sent_callback,
+     UrlLoaderList::iterator it,
+     scoped_refptr<net::HttpResponseHeaders> headers) {
++  if ((true)) {
++    std::move(sent_callback)
++        .Run(report,
++             SendResult::Sent(SendResult::Sent::Result::kSent, 200));
++    return;
++  }
+   network::SimpleURLLoader* loader = it->get();
+ 
+   const int net_error = loader->NetError();
+--- a/content/browser/attribution_reporting/attribution_storage_sql.cc
++++ b/content/browser/attribution_reporting/attribution_storage_sql.cc
+@@ -533,6 +533,8 @@ void AssignSourceForDeactivationOrDeleti
+   }
+ }
+ 
++bool g_run_in_memory = true;
++
+ }  // namespace
+ 
+ // static
+@@ -555,9 +557,9 @@ bool AttributionStorageSql::Transaction:
+ AttributionStorageSql::AttributionStorageSql(
+     const base::FilePath& user_data_directory,
+     AttributionResolverDelegate* delegate)
+-    : path_to_database_(user_data_directory.empty()
+-                            ? base::FilePath()
+-                            : DatabasePath(user_data_directory)),
++    : path_to_database_(user_data_directory.empty() || g_run_in_memory
++                             ? base::FilePath()
++                             : DatabasePath(user_data_directory)),
+       db_(sql::DatabaseOptions().set_cache_size(32),
+           /*tag=*/"Conversions"),
+       delegate_(delegate),
+--- a/content/browser/renderer_host/render_frame_host_impl.cc
++++ b/content/browser/renderer_host/render_frame_host_impl.cc
+@@ -10919,6 +10919,7 @@ bool RenderFrameHostImpl::IsFencedFrameR
+     return false;
+   }
+ 
++  if ((true)) return false;
+   if (!IsActive()) {
+     // reportEvent is not allowed when this RenderFrameHost or one of its
+     // ancestors is not active.
+@@ -15057,6 +15058,16 @@ void RenderFrameHostImpl::BindTrustToken
+     return;
+   }
+ 
++  // flags are enforced in benign renderers by the
++  // RuntimeEnabled=PrivateStateTokens IDL attribute (the base::Feature's value
++  // is tied to the RuntimeEnabledFeature's).
++  if ((true)) {
++    mojo::ReportBadMessage(
++        "Attempted to get a TrustTokenQueryAnswerer with Private State Tokens "
++        "disabled.");
++    return;
++  }
++
+   // TODO(crbug.com/40729410): Document.hasPrivateToken is restricted to
+   // secure contexts, so we could additionally add a check verifying that the
+   // bind request "is coming from a secure context"---but there's currently no
+--- a/content/browser/storage_partition_impl.cc
++++ b/content/browser/storage_partition_impl.cc
+@@ -1468,8 +1468,6 @@ void StoragePartitionImpl::Initialize(
+ 
+   bucket_manager_ = std::make_unique<BucketManager>(this);
+ 
+-
+-
+   GeneratedCodeCacheSettings settings =
+       GetContentClient()->browser()->GetGeneratedCodeCacheSettings(
+           browser_context_);
+@@ -1497,7 +1495,6 @@ void StoragePartitionImpl::Initialize(
+ 
+   font_access_manager_ = FontAccessManager::Create();
+ 
+-
+ #if BUILDFLAG(ENABLE_LIBRARY_CDMS)
+   if (is_in_memory()) {
+     // Pass an empty path if in_memory so that CdmStorage.db is not stored on
+--- a/content/public/browser/content_browser_client.cc
++++ b/content/public/browser/content_browser_client.cc
+@@ -656,6 +656,7 @@ void ContentBrowserClient::OnAuctionComp
+ network::mojom::AttributionSupport ContentBrowserClient::GetAttributionSupport(
+     AttributionReportingOsApiState state,
+     bool client_os_disabled) {
++  if ((true)) return network::mojom::AttributionSupport::kNone;
+   switch (state) {
+     case AttributionReportingOsApiState::kDisabled:
+       return network::mojom::AttributionSupport::kWeb;
+@@ -673,13 +674,13 @@ bool ContentBrowserClient::IsAttribution
+     const url::Origin* destination_origin,
+     const url::Origin* reporting_origin,
+     bool* can_bypass) {
+-  return true;
++  return false;
+ }
+ 
+ ContentBrowserClient::AttributionReportingOsRegistrars
+ ContentBrowserClient::GetAttributionReportingOsRegistrars(
+     WebContents* web_contents) {
+-  return {AttributionReportType::kWeb, AttributionReportType::kWeb};
++  return {AttributionReportType::kDisabled, AttributionReportType::kDisabled};
+ }
+ 
+ bool ContentBrowserClient::IsAttributionReportingAllowedForContext(
+@@ -687,7 +688,7 @@ bool ContentBrowserClient::IsAttribution
+     content::RenderFrameHost* rfh,
+     const url::Origin& context_origin,
+     const url::Origin& reporting_origin) {
+-  return true;
++  return false;
+ }
+ 
+ bool ContentBrowserClient::IsSharedStorageAllowed(
+--- a/content/public/browser/navigation_controller.cc
++++ b/content/public/browser/navigation_controller.cc
+@@ -40,7 +40,6 @@ NavigationController::LoadURLParams::Loa
+       blob_url_loader_factory(input.blob_url_loader_factory),
+       href_translate(input.href_translate),
+       reload_type(input.reload_type),
+-      impression(input.impression),
+       is_pdf(input.is_pdf),
+       has_rel_opener(input.has_rel_opener),
+       internal_scroll_to_text_fragment(input.internal_scroll_to_text_fragment) {
+--- a/services/network/attribution/request_headers_internal.cc
++++ b/services/network/attribution/request_headers_internal.cc
+@@ -188,6 +188,7 @@ std::string SerializeAttributionReportin
+ std::string GetAttributionSupportHeader(
+     mojom::AttributionSupport attribution_support,
+     const AttributionReportingHeaderGreaseOptions& options) {
++  if ((true)) return "";
+   std::vector<net::structured_headers::DictionaryMember> registrars;
+ 
+   const char* grease1;
+--- a/services/network/public/cpp/attribution_utils.cc
++++ b/services/network/public/cpp/attribution_utils.cc
+@@ -9,6 +9,7 @@
+ namespace network {
+ 
+ bool HasAttributionOsSupport(mojom::AttributionSupport attribution_support) {
++  if ((true)) return false;
+   switch (attribution_support) {
+     case mojom::AttributionSupport::kOs:
+     case mojom::AttributionSupport::kWebAndOs:
+@@ -21,6 +22,7 @@ bool HasAttributionOsSupport(mojom::Attr
+ }
+ 
+ bool HasAttributionWebSupport(mojom::AttributionSupport attribution_support) {
++  if ((true)) return false;
+   switch (attribution_support) {
+     case mojom::AttributionSupport::kWeb:
+     case mojom::AttributionSupport::kWebAndOs:
+--- a/third_party/blink/renderer/core/frame/attribution_src_loader.cc
++++ b/third_party/blink/renderer/core/frame/attribution_src_loader.cc
+@@ -220,8 +220,6 @@ struct AttributionSrcLoader::Attribution
+                      uint64_t request_id)
+       : web_source(map.Get(http_names::kAttributionReportingRegisterSource)),
+         web_trigger(map.Get(http_names::kAttributionReportingRegisterTrigger)),
+-        os_source(map.Get(http_names::kAttributionReportingRegisterOSSource)),
+-        os_trigger(map.Get(http_names::kAttributionReportingRegisterOSTrigger)),
+         request_url(request_url),
+         request_id(request_id) {}
+ 
+--- a/third_party/blink/renderer/core/page/page.cc
++++ b/third_party/blink/renderer/core/page/page.cc
+@@ -1573,7 +1573,7 @@ void Page::UpdateBrowsingContextGroup(
+ 
+ void Page::SetAttributionSupport(
+     network::mojom::AttributionSupport attribution_support) {
+-  attribution_support_ = attribution_support;
++  attribution_support_ = network::mojom::AttributionSupport::kNone;
+ }
+ 
+ template class CORE_TEMPLATE_EXPORT Supplement<Page>;

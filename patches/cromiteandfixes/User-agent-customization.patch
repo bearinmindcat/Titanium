@@ -1,0 +1,108 @@
+From: uazo <uazo@users.noreply.github.com>
+Date: Fri, 9 Apr 2021 20:09:08 +0000
+Subject: User agent customization
+
+Add possibility to define a custom User agent for mobile and desktop mode.
+Add possibility to reactivate the metatag view for desktop mode.
+The menu item in the hamburger menu applies to the tab only,
+whereas the content setting is intended for use in a specific site.
+
+Original License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+License: GPL-3.0-only - https://spdx.org/licenses/GPL-3.0-only.html
+---
+--- a/base/base_switches.h
++++ b/base/base_switches.h
+@@ -193,6 +193,8 @@ inline constexpr char kPackageName[] = "
+ inline constexpr char kPackageVersionName[] = "package-version-name";
+ #endif
+ 
++inline constexpr char kDesktopModeViewportMetaEnabled[] = "dm-viewport-meta-enabled";
++
+ #if BUILDFLAG(IS_CHROMEOS)
+ // Override the default scheduling boosting value for urgent tasks.
+ // This can be adjusted if a specific chromeos device shows better perf/power
+--- a/chrome/common/pref_names.h
++++ b/chrome/common/pref_names.h
+@@ -941,6 +941,8 @@ inline constexpr char kEnableReferrers[]
+ // Whether to send the DNT header.
+ inline constexpr char kEnableDoNotTrack[] = "enable_do_not_track";
+ 
++inline constexpr char kEnableGPC[] = "enable_gpc";
++
+ // Whether to allow the use of Encrypted Media Extensions (EME), except for the
+ // use of Clear Key key sytems, which is always allowed as required by the spec.
+ // TODO(crbug.com/40549758): This pref was used as a WebPreference which is why
+@@ -950,6 +952,9 @@ inline constexpr char kEnableDoNotTrack[
+ inline constexpr char kEnableEncryptedMedia[] =
+     "webkit.webprefs.encrypted_media_enabled";
+ 
++// Set referrer policy.
++inline constexpr char kReferrersPolicy[] = "referrers_policy";
++
+ // Boolean that specifies whether to import the form data for autofill from the
+ // default browser on first run.
+ inline constexpr char kImportAutofillFormData[] = "import_autofill_form_data";
+@@ -1226,6 +1231,14 @@ inline constexpr char kNaviOnboardGroup[
+ inline constexpr char kHadThreeConsecutiveNotificationPermissionDenies[] =
+     "profile.content_settings.had_three_consecutive_denies.notifications";
+ 
++#if BUILDFLAG(IS_ANDROID)
++inline constexpr char kOverrideUserAgentEnabled[] = "override_user_agent_enabled";
++inline constexpr char kOverrideUserAgent[] = "override_user_agent";
++inline constexpr char kOverrideUserAgentDesktopModeEnabled[] = "override_user_agent_dm_enabled";
++inline constexpr char kOverrideUserAgentDesktopMode[] = "override_user_agent_dm";
++inline constexpr char kDesktopModeViewportMetaEnabled[] = "dm-viewport-meta-enabled";
++#endif
++
+ // Boolean indicating whether support for Data URLs in SVGUseElement should be
+ // removed.
+ inline constexpr char kDataUrlInSvgUseEnabled[] =
+--- a/content/browser/renderer_host/render_process_host_impl.cc
++++ b/content/browser/renderer_host/render_process_host_impl.cc
+@@ -3995,6 +3995,7 @@ void RenderProcessHostImpl::PropagateBro
+ #if BUILDFLAG(IS_CHROMEOS)
+       switches::kSchedulerBoostUrgent,
+ #endif
++    switches::kDesktopModeViewportMetaEnabled,
+   };
+   renderer_cmd->CopySwitchesFrom(browser_cmd, kSwitchNames);
+ 
+--- a/content/browser/web_contents/web_contents_impl.cc
++++ b/content/browser/web_contents/web_contents_impl.cc
+@@ -19,6 +19,7 @@
+ 
+ #include "base/auto_reset.h"
+ #include "base/base_switches.h"
++#include "base/base_switches.h"
+ #include "base/check_op.h"
+ #include "base/command_line.h"
+ #include "base/containers/flat_set.h"
+@@ -2460,8 +2461,6 @@ void WebContentsImpl::SetUserAgentOverri
+   OPTIONAL_TRACE_EVENT2("content", "WebContentsImpl::SetUserAgentOverride",
+                         "ua_override", ua_override.ua_string_override,
+                         "override_in_new_tabs", override_in_new_tabs);
+-  DCHECK(!ua_override.ua_metadata_override.has_value() ||
+-         !ua_override.ua_string_override.empty());
+ 
+   if (GetUserAgentOverride() == ua_override) {
+     return;
+@@ -3909,6 +3908,9 @@ const blink::web_pref::WebPreferences We
+ #else
+     prefs.viewport_meta_enabled = false;
+ #endif
++    if (!command_line.HasSwitch(switches::kDesktopModeViewportMetaEnabled)) {
++      prefs.viewport_meta_enabled = false;
++    }
+   }
+ 
+   prefs.spatial_navigation_enabled =
+--- a/content/renderer/render_thread_impl.cc
++++ b/content/renderer/render_thread_impl.cc
+@@ -857,7 +857,6 @@ void RenderThreadImpl::InitializeRendere
+     uint64_t trace_id) {
+   TRACE_EVENT("navigation", "RenderThreadImpl::InitializeRenderer",
+               perfetto::TerminatingFlow::Global(trace_id));
+-  DCHECK(user_agent_.IsNull());
+ 
+   user_agent_ = WebString::FromUtf8(user_agent);
+   GetContentClient()->renderer()->DidSetUserAgent(user_agent);

@@ -1,0 +1,14 @@
+# out/Secure build args
+is_official_build = true
+is_debug = false
+chrome_pgo_phase = 2
+use_thin_lto = true
+thin_lto_enable_optimizations = true
+is_cfi = true
+dcheck_always_on = true          # keep DCHECKs
+symbol_level = 1
+blink_symbol_level = 0
+safe_browsing_mode = 0           # no Safe Browsing
+ffmpeg_branding = "Chrome"
+proprietary_codecs = true
+enable_nacl = false

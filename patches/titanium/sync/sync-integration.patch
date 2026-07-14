@@ -1,0 +1,744 @@
+--- a/components/sync/base/features.cc
++++ b/components/sync/base/features.cc
+@@ -179,8 +179,12 @@ BASE_FEATURE(kSyncTrustedVaultInfobarMes
+ BASE_FEATURE(kSyncPreferencesUseSelectedTypes,
+              base::FEATURE_ENABLED_BY_DEFAULT);
+ 
++// Self-hosted account-less sync: disabled by default. The enterprise
++// managed-status finder never resolves for our synthetic (sync-code-derived)
++// account, which would freeze the sync transport at "Initializing". A
++// de-Googled fork never has a real managed Google account, so this is safe.
+ BASE_FEATURE(kSyncDetermineAccountManagedStatus,
+-             base::FEATURE_ENABLED_BY_DEFAULT);
++             base::FEATURE_DISABLED_BY_DEFAULT);
+ BASE_FEATURE_PARAM(base::TimeDelta,
+                    kSyncDetermineAccountManagedStatusTimeout,
+                    &kSyncDetermineAccountManagedStatus,
+--- a/components/sync/base/pref_names.h
++++ b/components/sync/base/pref_names.h
+@@ -43,6 +43,15 @@ inline constexpr char kSyncInitialSyncFe
+ inline constexpr char kSyncKeepEverythingSynced[] =
+     "sync.keep_everything_synced";
+ 
++// Account-less self-hosted sync: the sync server address (origin/URL) set via
++// the profile-menu sync panel. When non-empty, overrides the default (and
++// command-line) sync server.
++inline constexpr char kSelfHostSyncServerUrl[] = "sync.selfhost_server_url";
++
++// Account-less self-hosted sync: the BIP39 sync code (identity + encryption
++// passphrase) set via the profile-menu sync panel.
++inline constexpr char kSelfHostSyncCode[] = "sync.selfhost_sync_code";
++
+ // Dict specifying the selected types per account for signed-in, non-syncing
+ // users only.
+ inline constexpr char kSelectedTypesPerAccount[] =
+--- a/components/sync/service/BUILD.gn
++++ b/components/sync/service/BUILD.gn
+@@ -52,6 +52,8 @@ static_library("service") {
+     "non_ui_syncable_service_based_data_type_controller.h",
+     "passphrase_type_metrics_provider.cc",
+     "passphrase_type_metrics_provider.h",
++    "//brave/components/sync/service/brave_sync_auth_manager.cc",
++    "//brave/components/sync/service/brave_sync_auth_manager.h",
+     "sync_auth_manager.cc",
+     "sync_auth_manager.h",
+     "sync_client.h",
+@@ -68,6 +70,8 @@ static_library("service") {
+     "sync_prefs.h",
+     "sync_prefs_policy_handler.cc",
+     "sync_prefs_policy_handler.h",
++    "self_host_sync_code.cc",
++    "self_host_sync_code.h",
+     "sync_service.cc",
+     "sync_service.h",
+     "sync_service_crypto.cc",
+@@ -111,6 +115,8 @@ static_library("service") {
+   deps = [
+     "//base",
+     "//base:i18n",
++    "//brave/components/brave_sync:crypto",
++    "//brave/components/brave_sync:network_time_helper",
+     "//components/keyed_service/core",
+     "//components/metrics",
+     "//components/network_time",
+--- a/components/sync/service/sync_auth_manager.cc
++++ b/components/sync/service/sync_auth_manager.cc
+@@ -603,4 +603,13 @@ void SyncAuthManager::SetLastAuthError(c
+   last_auth_error_time_ = base::Time::Now();
+ }
+ 
++// Default implementation for the now-virtual DetermineAccountToUse member.
++// BraveSyncAuthManager overrides this to provide a sync-code-derived,
++// account-less identity for self-hosted sync. The base behavior delegates to
++// the original anonymous-namespace helper above.
++SyncAccountInfo SyncAuthManager::DetermineAccountToUse(
++    const signin::IdentityManager* identity_manager) const {
++  return syncer::DetermineAccountToUse(identity_manager);
++}
++
+ }  // namespace syncer
+--- a/components/sync/service/sync_auth_manager.h
++++ b/components/sync/service/sync_auth_manager.h
+@@ -41,6 +41,10 @@ struct SyncAccountInfo {
+                          const SyncAccountInfo&) = default;
+ };
+ 
++// Forward-declared so the account-less self-hosted-sync subclass can be a
++// friend of SyncAuthManager (see brave/components/sync/service).
++class BraveSyncAuthManager;
++
+ // SyncAuthManager tracks the account to be used for Sync and its authentication
+ // state. Note that this account may or may not be the primary account (as per
+ // IdentityManager::GetPrimaryAccountInfo() etc).
+@@ -180,6 +184,11 @@ class SyncAuthManager : public signin::I
+   // changes (sign-in/sign-out/"primary" bit change). Note that changing from
+   // one account to another is exposed to observers as a sign-out + sign-in.
+   // Returns whether the syncing account was updated.
++  // Virtualized + friended so BraveSyncAuthManager can supply an account-less
++  // (sync-code-derived) account for self-hosted sync.
++  virtual SyncAccountInfo DetermineAccountToUse(
++      const signin::IdentityManager* identity_manager) const;
++  friend class BraveSyncAuthManager;
+   bool UpdateSyncAccountIfNecessary();
+ 
+   // Called by ActiveAccount when the account's managed-ness has been determined
+@@ -203,7 +212,7 @@ class SyncAuthManager : public signin::I
+   // Immediately starts an access token request, unless one is already ongoing.
+   // If another request is scheduled for later, it is canceled. Any access token
+   // we currently have is invalidated.
+-  void RequestAccessToken();
++  virtual void RequestAccessToken();
+ 
+   // Callback for `ongoing_access_token_fetch_`.
+   void AccessTokenFetched(GoogleServiceAuthError error,
+--- a/components/sync/service/sync_service_impl.cc
++++ b/components/sync/service/sync_service_impl.cc
+@@ -37,6 +37,7 @@
+ #include "components/signin/public/identity_manager/identity_manager.h"
+ #include "components/signin/public/identity_manager/identity_utils.h"
+ #include "components/signin/public/identity_manager/primary_account_mutator.h"
++#include "brave/components/sync/service/brave_sync_auth_manager.h"
+ #include "components/sync/base/command_line_switches.h"
+ #include "components/sync/base/custom_passphrase_bootstrap_token.h"
+ #include "components/sync/base/data_type.h"
+@@ -230,8 +231,8 @@ SyncServiceImpl::SyncServiceImpl(InitPar
+       identity_manager_(sync_prefs_.IsLocalSyncEnabled()
+                             ? nullptr
+                             : sync_client_->GetIdentityManager()),
+-      auth_manager_(std::make_unique<SyncAuthManager>(identity_manager_,
+-                                                      /*delegate=*/this)),
++      auth_manager_(std::make_unique<BraveSyncAuthManager>(identity_manager_,
++                                                           /*delegate=*/this)),
+       channel_(init_params.channel),
+       debug_identifier_(std::move(init_params.debug_identifier)),
+       sync_service_url_(
+@@ -430,6 +431,40 @@ void SyncServiceImpl::Initialize(DataTyp
+   device_statistics_scheduler_ = std::make_unique<DeviceStatisticsScheduler>(
+       /*delegate=*/this, sync_client_->GetPrefService(),
+       sync_client_->GetIdentityManager(), sync_service_url_);
++
++  // Self-hosted account-less sync (Brave-style): if a BIP39 sync code is
++  // supplied on the command line, derive the Ed25519 signing keys from it and
++  // enable the default data types. Minimal hook to validate end-to-end sync
++  // against a self-hosted server (e.g. sync-lite) before building the full
++  // sync-code UI / BraveSyncServiceImpl.
++  {
++    const base::CommandLine* command_line =
++        base::CommandLine::ForCurrentProcess();
++    if (command_line->HasSwitch("brave-sync-code")) {
++      const std::string sync_code =
++          command_line->GetSwitchValueASCII("brave-sync-code");
++      static_cast<BraveSyncAuthManager*>(auth_manager_.get())
++          ->DeriveSigningKeys(sync_code);
++      std::unique_ptr<SyncSetupInProgressHandle> setup_handle =
++          GetSetupInProgressHandle();
++      UserSelectableTypeSet selected_types;
++      selected_types.Put(UserSelectableType::kBookmarks);
++      selected_types.Put(UserSelectableType::kHistory);
++      selected_types.Put(UserSelectableType::kPasswords);
++      selected_types.Put(UserSelectableType::kTabs);
++      selected_types.Put(UserSelectableType::kExtensions);
++      selected_types.Put(UserSelectableType::kPreferences);
++      selected_types.Put(UserSelectableType::kAutofill);
++      selected_types.Put(UserSelectableType::kReadingList);
++      GetUserSettings()->SetSelectedTypes(/*sync_everything=*/false,
++                                          selected_types);
++      // Mark the initial sync setup complete so the selected data types
++      // actually activate (otherwise only Nigori/encryption-keys configure).
++      if (!GetUserSettings()->IsInitialSyncFeatureSetupComplete()) {
++        GetUserSettings()->SetInitialSyncFeatureSetupComplete();
++      }
++    }
++  }
+ }
+ 
+ void SyncServiceImpl::StartSyncingWithServer() {
+@@ -1048,6 +1083,22 @@ void SyncServiceImpl::OnEngineInitialize
+ 
+   crypto_.SetSyncEngine(GetAccountInfo(), engine_.get());
+ 
++  // [SELFHOST-SYNC DIAGNOSTIC] Always-on dump of sync state to find why data
++  // types don't start (DVLOG is compiled out in release builds).
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("brave-sync-code")) {
++    LOG(ERROR) << "[SELFHOST-SYNC] OnEngineInitialized success=" << success
++               << " disable_reasons=" << GetDisableReasons().size()
++               << " sync_feature_enabled=" << IsSyncFeatureEnabled()
++               << " transport_only=" << UseTransportOnlyMode()
++               << " setup_complete="
++               << user_settings_->IsInitialSyncFeatureSetupComplete()
++               << " signed_in=" << IsSignedIn()
++               << " account_empty=" << GetAccountInfo().IsEmpty()
++               << " preferred_count=" << GetPreferredDataTypes().size()
++               << " passphrase_required="
++               << user_settings_->IsPassphraseRequired();
++  }
++
+   std::vector<base::OnceClosure> tasks;
+   tasks.swap(tasks_waiting_for_engine_initialization_);
+   for (base::OnceClosure& task : tasks) {
+@@ -1803,6 +1854,13 @@ void SyncServiceImpl::ConfigureDataTypeM
+ }
+ 
+ bool SyncServiceImpl::UseTransportOnlyMode() const {
++  // Account-less self-hosted sync: force full-sync mode so all preferred data
++  // types (bookmarks/history/passwords/tabs) run, instead of being restricted
++  // to the transport-only subset. This mirrors the state Brave's sync-consented
++  // account produces.
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("brave-sync-code")) {
++    return false;
++  }
+   // Note: When local Sync is enabled, then we want full-sync mode (not just
+   // transport), even though Sync-the-feature is not considered enabled.
+   return !IsSyncFeatureEnabled() && !IsLocalSyncEnabled();
+--- a/chrome/browser/resources/settings/router.ts
++++ b/chrome/browser/resources/settings/router.ts
+@@ -45,6 +45,8 @@ export interface SettingsRoutes {
+   PERFORMANCE: Route;
+   PRELOADING: Route;
+   PRIVACY: Route;
++  SELF_HOST_SYNC: Route;
++  SYNC_TYPES: Route;
+   PRIVACY_GUIDE: Route;
+   PRIVACY_SANDBOX: Route;
+   PRIVACY_SANDBOX_AD_MEASUREMENT: Route;
+--- a/chrome/browser/resources/settings/settings_main/settings_main.html
++++ b/chrome/browser/resources/settings/settings_main/settings_main.html
+@@ -164,6 +164,14 @@
+     </div>
+   </template>
+ 
++  <div slot="view" id="selfHostSync">
++    <template is="dom-if" if="[[renderPlugin_(
++        routes_.SELF_HOST_SYNC, lastRoute_, inSearchMode_)]]">
++      <settings-self-host-sync-page prefs="{{prefs}}">
++      </settings-self-host-sync-page>
++    </template>
++  </div>
++
+   <template is="dom-if" if="[[showPage_(pageVisibility_.languages)]]">
+     <div slot="view" id="languages">
+       <template is="dom-if" if="[[renderPlugin_(
+--- a/chrome/browser/resources/settings/settings_main/settings_main.ts
++++ b/chrome/browser/resources/settings/settings_main/settings_main.ts
+@@ -16,6 +16,7 @@ import '../appearance_page/appearance_pa
+ import '../autofill_page/autofill_page_index.js';
+ import '../on_startup_page/on_startup_page.js';
+ import '../people_page/people_page_index.js';
++import '../self_host_sync_page/self_host_sync_page.js';
+ import '../performance_page/performance_page_index.js';
+ import '../privacy_page/privacy_page_index.js';
+ import '../reset_page/reset_profile_banner.js';
+--- a/chrome/browser/resources/settings/settings_menu/settings_menu.html
++++ b/chrome/browser/resources/settings/settings_menu/settings_menu.html
+@@ -117,6 +117,12 @@
+           $i18n{onStartup}
+           <cr-ripple></cr-ripple>
+         </a>
++        <a role="menuitem" id="selfHostSync" href="/Sync"
++            class="cr-nav-menu-item">
++          <cr-icon icon="settings:cloud"></cr-icon>
++          $i18n{selfHostSyncPageTitle}
++          <cr-ripple></cr-ripple>
++        </a>
+         <div class="menu-separator"></div>
+         <a role="menuitem" id="languages" href="/languages"
+             class="cr-nav-menu-item"
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -1301,6 +1301,8 @@ static_library("ui") {
+       "webui/settings/saved_info_handler.h",
+       "webui/settings/search_engines_handler.cc",
+       "webui/settings/search_engines_handler.h",
++      "webui/settings/self_host_sync_handler.cc",
++      "webui/settings/self_host_sync_handler.h",
+       "webui/settings/security_settings_provider.cc",
+       "webui/settings/security_settings_provider.h",
+       "webui/settings/settings_clear_browsing_data_handler.cc",
+--- a/chrome/browser/ui/views/profiles/profile_menu_view_base.cc
++++ b/chrome/browser/ui/views/profiles/profile_menu_view_base.cc
+@@ -627,6 +627,15 @@ void ProfileMenuViewBase::AddFeatureButt
+       text));
+ }
+ 
++// ungoogled fork (self-host sync): ported from 149; upstream 150 removed this.
++void ProfileMenuViewBase::AddFeatureView(std::unique_ptr<views::View> view) {
++  if (!features_container_->GetLayoutManager()) {
++    features_container_->SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kVertical));
++  }
++  features_container_->AddChildView(std::move(view));
++}
++
+ void ProfileMenuViewBase::SetProfileManagementHeading(
+     const std::u16string& heading) {
+   profile_mgmt_heading_ = heading;
+--- a/chrome/browser/ui/views/profiles/profile_menu_view_base.h
++++ b/chrome/browser/ui/views/profiles/profile_menu_view_base.h
+@@ -168,6 +168,9 @@ class ProfileMenuViewBase : public conte
+                         base::RepeatingClosure action,
+                         const gfx::VectorIcon& icon,
+                         float icon_to_image_ratio = 1.0f);
++  // ungoogled fork (self-host sync): add an arbitrary view to the features
++  // container (ported from 149; upstream 150 removed this overload).
++  void AddFeatureView(std::unique_ptr<views::View> view);
+   void SetProfileManagementHeading(const std::u16string& heading);
+   void AddAvailableProfile(const ui::ImageModel& image_model,
+                            const std::u16string& name,
+--- a/chrome/browser/ui/views/profiles/profile_menu_view.cc
++++ b/chrome/browser/ui/views/profiles/profile_menu_view.cc
+@@ -11,6 +11,14 @@
+ #include "ash/constants/web_app_id_constants.h"
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
++#include "base/files/file_util.h"
++#include "base/task/thread_pool.h"
++#include "chrome/browser/ui/browser_finder.h"
++#include "chrome/browser/ui/browser_window.h"
++#include "third_party/zlib/google/zip.h"
++#include "ui/shell_dialogs/select_file_dialog.h"
++#include "ui/shell_dialogs/select_file_policy.h"
++#include "ui/shell_dialogs/selected_file_info.h"
+ #include "base/functional/callback.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/metrics/histogram_functions.h"
+@@ -21,6 +29,23 @@
+ #include "build/build_config.h"
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/app/vector_icons/vector_icons.h"
++#include "base/strings/utf_string_conversions.h"
++#include "components/prefs/pref_service.h"
++#include "components/sync/base/pref_names.h"
++#include "chrome/browser/sync/sync_service_factory.h"
++#include "components/sync/service/sync_service.h"
++#include "components/sync/service/self_host_sync_code.h"
++#include "components/sync/service/sync_user_settings.h"
++#include "components/sync/base/user_selectable_type.h"
++#include "ui/views/controls/button/toggle_button.h"
++#include "ui/views/accessibility/view_accessibility.h"
++#include "ui/base/clipboard/scoped_clipboard_writer.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/gfx/geometry/insets.h"
++#include "ui/views/controls/button/md_text_button.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/controls/textfield/textfield.h"
++#include "ui/views/layout/box_layout.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/enterprise/browser_management/browser_management_service.h"
+ #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
+@@ -120,6 +145,111 @@
+ 
+ namespace {
+ 
++// Returns true for profile files that should go into an export archive.
++// Skips volatile caches / lock files so the .zip stays small and consistent.
++bool ShouldIncludeInProfileExport(const base::FilePath& path) {
++  static const char* const kSkip[] = {
++      "Cache",         "Code Cache",  "GPUCache",     "DawnCache",
++      "GraphiteDawnCache", "Service Worker", "Crashpad", "Singleton",
++      "component_crx_cache", "GrShaderCache", "ShaderCache"};
++  const std::string value = path.value();
++  for (const char* needle : kSkip) {
++    if (value.find(needle) != std::string::npos) {
++      return false;
++    }
++  }
++  return true;
++}
++
++// Zips the whole profile directory to `dest` (runs on a blocking thread).
++void DoProfileExport(const base::FilePath& profile_path,
++                     const base::FilePath& dest) {
++  zip::ZipWithFilterCallback(profile_path, dest,
++                             base::BindRepeating(&ShouldIncludeInProfileExport));
++}
++
++// Unzips `src` into a sibling "PendingImport" staging dir. A startup hook in
++// chrome_browser_main swaps it into place on next launch, since the live
++// profile's open database files can't be safely overwritten while running.
++void DoProfileImportStage(const base::FilePath& profile_path,
++                          const base::FilePath& src) {
++  const base::FilePath pending =
++      profile_path.DirName().Append(FILE_PATH_LITERAL("PendingImport"));
++  base::DeletePathRecursively(pending);
++  base::CreateDirectory(pending);
++  zip::Unzip(src, pending);
++}
++
++// Self-owned file-dialog driver for whole-profile export/import. Created on a
++// button click, deletes itself once the dialog resolves — so it outlives the
++// (ephemeral) profile bubble, which closes as soon as the dialog takes focus.
++class SelfHostProfileTransfer : public ui::SelectFileDialog::Listener {
++ public:
++  enum class Mode { kExport, kImport };
++
++  static void Start(Mode mode,
++                    const base::FilePath& profile_path,
++                    gfx::NativeWindow parent) {
++    new SelfHostProfileTransfer(mode, profile_path, parent);
++  }
++
++  SelfHostProfileTransfer(const SelfHostProfileTransfer&) = delete;
++  SelfHostProfileTransfer& operator=(const SelfHostProfileTransfer&) = delete;
++
++ private:
++  SelfHostProfileTransfer(Mode mode,
++                          const base::FilePath& profile_path,
++                          gfx::NativeWindow parent)
++      : mode_(mode), profile_path_(profile_path) {
++    select_file_dialog_ = ui::SelectFileDialog::Create(this, nullptr);
++    ui::SelectFileDialog::FileTypeInfo type_info;
++    type_info.extensions = {{FILE_PATH_LITERAL("zip")}};
++    type_info.include_all_files = true;
++    if (mode_ == Mode::kExport) {
++      select_file_dialog_->SelectFile(
++          ui::SelectFileDialog::SELECT_SAVEAS_FILE, std::u16string(),
++          profile_path_.DirName().Append(
++              FILE_PATH_LITERAL("chromium-profile.zip")),
++          &type_info, 1, FILE_PATH_LITERAL("zip"), parent);
++    } else {
++      select_file_dialog_->SelectFile(
++          ui::SelectFileDialog::SELECT_OPEN_FILE, std::u16string(),
++          profile_path_.DirName(), &type_info, 1, FILE_PATH_LITERAL("zip"),
++          parent);
++    }
++  }
++
++  ~SelfHostProfileTransfer() override {
++    if (select_file_dialog_) {
++      select_file_dialog_->ListenerDestroyed();
++    }
++  }
++
++  // ui::SelectFileDialog::Listener:
++  void FileSelected(const ui::SelectedFileInfo& file, int index) override {
++    const base::FilePath chosen = file.path();
++    if (mode_ == Mode::kExport) {
++      base::ThreadPool::PostTask(
++          FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
++          base::BindOnce(&DoProfileExport, profile_path_, chosen));
++    } else {
++      // Stage the import, then restart so the swap can apply before any
++      // profile database is opened.
++      base::ThreadPool::PostTaskAndReply(
++          FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
++          base::BindOnce(&DoProfileImportStage, profile_path_, chosen),
++          base::BindOnce(&chrome::AttemptRestart));
++    }
++    delete this;
++  }
++
++  void FileSelectionCanceled() override { delete this; }
++
++  Mode mode_;
++  base::FilePath profile_path_;
++  scoped_refptr<ui::SelectFileDialog> select_file_dialog_;
++};
++
+ std::u16string GetSyncErrorButtonText(
+     Profile* profile,
+     syncer::SyncService::UserActionableError error) {
+@@ -983,6 +1113,212 @@ void ProfileMenuView::BuildCustomizeProf
+           : vector_icons::kEditChromeRefreshOldIcon);
+ }
+ 
++void ProfileMenuView::BuildSelfHostSyncButton() {
++  CHECK(!profile().IsGuestSession());
++
++  // Collapsible header: clicking it expands/collapses the panel below like a
++  // dropdown. Uses the sync icon to match the other feature rows.
++  AddFeatureButton(
++      u"Sync server settings",
++      base::BindRepeating(&ProfileMenuView::OnSelfHostSyncToggleExpand,
++                          base::Unretained(this)),
++      vector_icons::kSyncChromeRefreshOldIcon);
++
++  // Every control lives in one container that starts collapsed (hidden). The
++  // header toggles its visibility; the bubble then resizes via SizeToContents().
++  auto content = std::make_unique<views::View>();
++  content->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical));
++  content->SetVisible(false);
++
++  // Status line: reflects whether self-hosted sync is currently active.
++  syncer::SyncService* sync_service =
++      SyncServiceFactory::GetForProfile(&profile());
++  const bool sync_on = sync_service && sync_service->IsSyncFeatureActive();
++  auto status_row = std::make_unique<views::View>();
++  status_row->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(4, 16), 8));
++  status_row->AddChildView(std::make_unique<views::Label>(
++      sync_on ? u"Sync server: ONLINE" : u"Sync server: OFFLINE"));
++  content->AddChildView(std::move(status_row));
++
++  // Inline "Sync server" row: [ label ] [ text field ] [ Save ].
++  auto row = std::make_unique<views::View>();
++  row->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(4, 16), 8));
++
++  row->AddChildView(std::make_unique<views::Label>(u"Sync server"));
++
++  auto textfield = std::make_unique<views::Textfield>();
++  textfield->SetPlaceholderText(u"https://host:8295");
++  textfield->SetDefaultWidthInChars(18);
++  textfield->SetText(base::UTF8ToUTF16(profile().GetPrefs()->GetString(
++      syncer::prefs::internal::kSelfHostSyncServerUrl)));
++  textfield->SetColor(SK_ColorWHITE);
++  selfhost_server_textfield_ = row->AddChildView(std::move(textfield));
++
++  row->AddChildView(std::make_unique<views::MdTextButton>(
++      base::BindRepeating(&ProfileMenuView::OnSelfHostSyncSaveClicked,
++                          base::Unretained(this)),
++      u"Save"));
++
++  content->AddChildView(std::move(row));
++
++  // Inline "Sync code" row: [ label ] [ text field ].
++  auto code_row = std::make_unique<views::View>();
++  code_row->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(4, 16), 8));
++  code_row->AddChildView(std::make_unique<views::Label>(u"Sync code"));
++  auto code_field = std::make_unique<views::Textfield>();
++  code_field->SetPlaceholderText(u"24-word code");
++  code_field->SetDefaultWidthInChars(24);
++  code_field->SetText(base::UTF8ToUTF16(profile().GetPrefs()->GetString(
++      syncer::prefs::internal::kSelfHostSyncCode)));
++  code_field->SetColor(SK_ColorWHITE);
++  selfhost_code_textfield_ = code_row->AddChildView(std::move(code_field));
++  content->AddChildView(std::move(code_row));
++
++  // Code action buttons: [ Generate ] [ Copy ] [ Save ].
++  auto code_btns = std::make_unique<views::View>();
++  code_btns->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(2, 16), 8));
++  code_btns->AddChildView(std::make_unique<views::MdTextButton>(
++      base::BindRepeating(&ProfileMenuView::OnSelfHostSyncGenerateClicked,
++                          base::Unretained(this)),
++      u"Generate"));
++  code_btns->AddChildView(std::make_unique<views::MdTextButton>(
++      base::BindRepeating(&ProfileMenuView::OnSelfHostSyncCopyClicked,
++                          base::Unretained(this)),
++      u"Copy"));
++  code_btns->AddChildView(std::make_unique<views::MdTextButton>(
++      base::BindRepeating(&ProfileMenuView::OnSelfHostSyncCodeSaveClicked,
++                          base::Unretained(this)),
++      u"Save"));
++  content->AddChildView(std::move(code_btns));
++
++  // Per-type toggles: choose what syncs.
++  syncer::SyncUserSettings* settings =
++      sync_service ? sync_service->GetUserSettings() : nullptr;
++  const syncer::UserSelectableTypeSet selected =
++      settings ? settings->GetSelectedTypes() : syncer::UserSelectableTypeSet();
++  const struct {
++    syncer::UserSelectableType type;
++    const char16_t* label;
++  } kTypeRows[] = {
++      {syncer::UserSelectableType::kBookmarks, u"Bookmarks"},
++      {syncer::UserSelectableType::kHistory, u"History"},
++      {syncer::UserSelectableType::kPasswords, u"Passwords"},
++      {syncer::UserSelectableType::kAutofill, u"Autofill"},
++      {syncer::UserSelectableType::kExtensions, u"Extensions"},
++      {syncer::UserSelectableType::kTabs, u"Tabs"},
++      {syncer::UserSelectableType::kPreferences, u"Preferences"},
++  };
++  for (const auto& tr : kTypeRows) {
++    auto type_row = std::make_unique<views::View>();
++    type_row->SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(2, 16), 8));
++    type_row->AddChildView(std::make_unique<views::Label>(tr.label));
++    auto toggle = std::make_unique<views::ToggleButton>(base::BindRepeating(
++        &ProfileMenuView::OnSelfHostSyncTypesChanged, base::Unretained(this)));
++    // Focusable views require an accessible name (enforced by a paint DCHECK).
++    toggle->GetViewAccessibility().SetName(std::u16string(tr.label));
++    toggle->SetIsOn(selected.Has(tr.type));
++    selfhost_type_toggles_.emplace_back(
++        tr.type, type_row->AddChildView(std::move(toggle)));
++    content->AddChildView(std::move(type_row));
++  }
++
++  // Whole-profile export / import (bundles everything, including the saved
++  // sync server + code) to a single .zip.
++  auto io_btns = std::make_unique<views::View>();
++  io_btns->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(6, 16), 8));
++  io_btns->AddChildView(std::make_unique<views::MdTextButton>(
++      base::BindRepeating(&ProfileMenuView::OnSelfHostSyncExportClicked,
++                          base::Unretained(this)),
++      u"Export all"));
++  io_btns->AddChildView(std::make_unique<views::MdTextButton>(
++      base::BindRepeating(&ProfileMenuView::OnSelfHostSyncImportClicked,
++                          base::Unretained(this)),
++      u"Import all"));
++  content->AddChildView(std::move(io_btns));
++
++  selfhost_sync_content_ = content.get();
++  AddFeatureView(std::move(content));
++}
++
++void ProfileMenuView::OnSelfHostSyncExportClicked() {
++  SelfHostProfileTransfer::Start(SelfHostProfileTransfer::Mode::kExport,
++                                 profile().GetPath(),
++                                 browser().window()->GetNativeWindow());
++}
++
++void ProfileMenuView::OnSelfHostSyncImportClicked() {
++  SelfHostProfileTransfer::Start(SelfHostProfileTransfer::Mode::kImport,
++                                 profile().GetPath(),
++                                 browser().window()->GetNativeWindow());
++}
++
++void ProfileMenuView::OnSelfHostSyncToggleExpand() {
++  if (!selfhost_sync_content_) {
++    return;
++  }
++  selfhost_sync_content_->SetVisible(!selfhost_sync_content_->GetVisible());
++  // Grow/shrink the bubble to fit the now-visible (or hidden) panel.
++  SizeToContents();
++}
++
++void ProfileMenuView::OnSelfHostSyncTypesChanged() {
++  syncer::SyncService* sync_service =
++      SyncServiceFactory::GetForProfile(&profile());
++  if (!sync_service) {
++    return;
++  }
++  syncer::UserSelectableTypeSet types;
++  for (const auto& [type, toggle] : selfhost_type_toggles_) {
++    if (toggle && toggle->GetIsOn()) {
++      types.Put(type);
++    }
++  }
++  sync_service->GetUserSettings()->SetSelectedTypes(/*sync_everything=*/false,
++                                                    types);
++}
++
++void ProfileMenuView::OnSelfHostSyncSaveClicked() {
++  // Saves the self-hosted sync server address to prefs; the sync engine reads
++  // it on next launch (SyncServiceImpl constructor).
++  if (selfhost_server_textfield_) {
++    profile().GetPrefs()->SetString(
++        syncer::prefs::internal::kSelfHostSyncServerUrl,
++        base::UTF16ToUTF8(selfhost_server_textfield_->GetText()));
++  }
++}
++
++void ProfileMenuView::OnSelfHostSyncCodeSaveClicked() {
++  // Saves the sync code (BIP39 passphrase) to prefs; the sync engine derives
++  // the signing keys from it on next launch.
++  if (selfhost_code_textfield_) {
++    profile().GetPrefs()->SetString(
++        syncer::prefs::internal::kSelfHostSyncCode,
++        base::UTF16ToUTF8(selfhost_code_textfield_->GetText()));
++  }
++}
++
++void ProfileMenuView::OnSelfHostSyncGenerateClicked() {
++  // Fills the code field with a fresh random 24-word BIP39 sync code.
++  if (selfhost_code_textfield_) {
++    selfhost_code_textfield_->SetText(
++        base::UTF8ToUTF16(syncer::GenerateSelfHostSyncCode()));
++  }
++}
++
++void ProfileMenuView::OnSelfHostSyncCopyClicked() {
++  if (selfhost_code_textfield_) {
++    ui::ScopedClipboardWriter(ui::ClipboardBuffer::kCopyPaste)
++        .WriteText(std::u16string(selfhost_code_textfield_->GetText()));
++  }
++}
++
+ void ProfileMenuView::MaybeBuildChromeAccountSettingsButton() {
+   CHECK(!profile().IsGuestSession());
+ 
+@@ -1180,6 +1516,7 @@ void ProfileMenuView::BuildFeatureButton
+   BuildAutofillSettingsButton();
+   MaybeBuildManageGoogleAccountButton();
+   BuildCustomizeProfileButton();
++  BuildSelfHostSyncButton();
+   (syncer::IsReplaceSyncPromosWithSignInPromosEnabled() &&
+    (!identity_manager ||
+     !identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync)))
+--- a/chrome/browser/ui/views/profiles/profile_menu_view.h
++++ b/chrome/browser/ui/views/profiles/profile_menu_view.h
+@@ -9,6 +9,7 @@
+ 
+ #include <memory>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ #include "base/functional/callback_forward.h"
+@@ -23,6 +24,7 @@
+ #include "components/signin/core/browser/signin_header_helper.h"
+ #include "components/signin/public/base/signin_buildflags.h"
+ #include "components/signin/public/base/signin_metrics.h"
++#include "components/sync/base/user_selectable_type.h"
+ #include "components/sync/service/local_data_description.h"
+ #include "components/sync/service/sync_service.h"
+ #include "ui/views/bubble/bubble_anchor.h"
+@@ -35,6 +37,11 @@ enum class AccessPoint;
+ struct CoreAccountInfo;
+ class Browser;
+ 
++namespace views {
++class Textfield;
++class ToggleButton;
++}  // namespace views
++
+ // This bubble view is displayed when the user clicks on the avatar button.
+ // It displays a list of profiles and allows users to switch between profiles.
+ //
+@@ -84,6 +91,18 @@ class ProfileMenuView : public ProfileMe
+   void OnGuestProfileButtonClicked();
+   void OnExitProfileButtonClicked();
+   void OnSyncSettingsButtonClicked();
++  // Account-less self-hosted sync: inline "Sync server" row (field + Save).
++  void BuildSelfHostSyncButton();
++  void OnSelfHostSyncSaveClicked();
++  void OnSelfHostSyncCodeSaveClicked();
++  void OnSelfHostSyncGenerateClicked();
++  void OnSelfHostSyncCopyClicked();
++  void OnSelfHostSyncTypesChanged();
++  // Expands/collapses the "Sync server settings" dropdown panel.
++  void OnSelfHostSyncToggleExpand();
++  // Whole-profile export/import (includes the saved sync server + code).
++  void OnSelfHostSyncExportClicked();
++  void OnSelfHostSyncImportClicked();
+   void OnGoogleServicesSettingsButtonClicked();
+   void OnAccountSettingsButtonClicked();
+   void OnSyncErrorButtonClicked(syncer::SyncService::UserActionableError error);
+@@ -147,6 +166,14 @@ class ProfileMenuView : public ProfileMe
+   // A profile switcher object needed if the user triggers opening other
+   // profile in a web app.
+   std::optional<WebAppProfileSwitcher> app_profile_switcher_;
++
++  // Inline self-hosted-sync fields (owned by the view tree).
++  raw_ptr<views::Textfield> selfhost_server_textfield_ = nullptr;
++  raw_ptr<views::Textfield> selfhost_code_textfield_ = nullptr;
++  // The collapsible container holding all the sync controls.
++  raw_ptr<views::View> selfhost_sync_content_ = nullptr;
++  std::vector<std::pair<syncer::UserSelectableType, raw_ptr<views::ToggleButton>>>
++      selfhost_type_toggles_;
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_VIEWS_PROFILES_PROFILE_MENU_VIEW_H_

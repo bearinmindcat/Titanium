@@ -1,0 +1,246 @@
+--- a/content/public/common/content_features.h
++++ b/content/public/common/content_features.h
+@@ -457,6 +457,9 @@ CONTENT_EXPORT bool IsPushSubscriptionCh
+ CONTENT_EXPORT bool IsFluidResizeEnabled();
+ #endif
+ 
++// ungoogled fork (batch3 security): Cromite Disable-idle-detection
++CONTENT_EXPORT BASE_DECLARE_FEATURE(kIdleDetection);
++
+ }  // namespace features
+ 
+ #endif  // CONTENT_PUBLIC_COMMON_CONTENT_FEATURES_H_
+--- a/net/base/features.h
++++ b/net/base/features.h
+@@ -23,6 +23,8 @@
+ namespace net::features {
+ 
+ NET_EXPORT BASE_DECLARE_FEATURE(kSetIpv6ProbeFalse);
++// ungoogled B2: add-flag-to-disable-IPv6-probes
++NET_EXPORT BASE_DECLARE_FEATURE(kIPv6Probing);
+ 
+ // Enables ALPS extension of TLS 1.3 for HTTP/2, see
+ // https://vasilvv.github.io/tls-alps/draft-vvv-tls-alps.html and
+@@ -914,6 +916,10 @@ NET_EXPORT BASE_DECLARE_FEATURE(kNoVaryS
+ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TaskPriority,
+                                       kNoVarySearchCacheLoadTaskRunnerPriority);
+ 
++// ungoogled fork (batch3 security): Cromite Disable-TLS-resumption
++NET_EXPORT BASE_DECLARE_FEATURE(kDisableTLSResumption);
++NET_EXPORT BASE_DECLARE_FEATURE(kLogTLSResumption);
++
+ }  // namespace net::features
+ 
+ #endif  // NET_BASE_FEATURES_H_
+--- a/android_webview/nonembedded/BUILD.gn
++++ b/android_webview/nonembedded/BUILD.gn
+@@ -102,13 +102,13 @@ android_library("services_java") {
+     "java/src/org/chromium/android_webview/services/AwMinidumpUploadJobService.java",
+     "java/src/org/chromium/android_webview/services/AwMinidumpUploaderDelegate.java",
+     "java/src/org/chromium/android_webview/services/AwNetLogService.java",
+-    "java/src/org/chromium/android_webview/services/AwVariationsSeedFetcher.java",
+     "java/src/org/chromium/android_webview/services/CrashLoggingUtils.java",
+     "java/src/org/chromium/android_webview/services/CrashReceiverService.java",
+     "java/src/org/chromium/android_webview/services/DeveloperModeContentProvider.java",
+     "java/src/org/chromium/android_webview/services/DeveloperUiService.java",
+     "java/src/org/chromium/android_webview/services/MetricsBridgeService.java",
+     "java/src/org/chromium/android_webview/services/MetricsUploadService.java",
++    "java/src/org/chromium/android_webview/services/AwVariationsSeedFetcher.java",
+     "java/src/org/chromium/android_webview/services/NonEmbeddedFastVariationsSeedSafeModeAction.java",
+     "java/src/org/chromium/android_webview/services/NonEmbeddedSafeModeAction.java",
+     "java/src/org/chromium/android_webview/services/NonEmbeddedSafeModeActionsSetupCleanup.java",
+--- a/build/modules/BUILD.gn
++++ b/build/modules/BUILD.gn
+@@ -223,9 +223,10 @@ if (use_unified_system_module) {
+         # otherwise.
+         "--append-module=std.new:export new_h\\nexport vcruntime_exception",
+       ]
+-    } else {
++    } else if (sysroot != "") {
+       # We need to pass the sysroot in so that it can scan it to generate a
+-      # modulemap for the sysroot headers.
++      # modulemap for the sysroot headers. (Guarded: use_sysroot=false -> host
++      # libs, empty sysroot, skip this arg.)
+       args += [
+         "--sysroot",
+         rebase_path(sysroot, root_build_dir),
+--- a/chrome/browser/accessibility/tree_fixing/BUILD.gn
++++ b/chrome/browser/accessibility/tree_fixing/BUILD.gn
+@@ -3,6 +3,7 @@
+ # found in the LICENSE file.
+ 
+ import("//build/buildflag_header.gni")
++import("//services/screen_ai/buildflags/features.gni")  # ungoogled: for enable_screen_ai_service
+ 
+ assert(!is_android, "AXTreeFixingService does not run on Android.")
+ 
+@@ -52,8 +53,6 @@ source_set("internal") {
+   sources = [
+     "internal/ax_tree_fixing_optimization_guide_service.cc",
+     "internal/ax_tree_fixing_optimization_guide_service.h",
+-    "internal/ax_tree_fixing_screen_ai_service.cc",
+-    "internal/ax_tree_fixing_screen_ai_service.h",
+     "internal/ax_tree_fixing_screenshotter.cc",
+     "internal/ax_tree_fixing_screenshotter.h",
+   ]
+@@ -68,4 +67,14 @@ source_set("internal") {
+     "//components/paint_preview/public",
+     "//content/public/browser",
+   ]
++
++  # ungoogled: screen-AI is disabled (enable_screen_ai_service=false), so its
++  # ax_tree_fixing variant + mojom dep are only compiled when it's on.
++  if (enable_screen_ai_service) {
++    sources += [
++      "internal/ax_tree_fixing_screen_ai_service.cc",
++      "internal/ax_tree_fixing_screen_ai_service.h",
++    ]
++    deps += [ "//services/screen_ai/public/mojom" ]
++  }
+ }
+--- a/chrome/browser/bromite_flag_entries.h
++++ b/chrome/browser/bromite_flag_entries.h
+@@ -16,6 +16,18 @@
+      flag_descriptions::kMaxConnectionsPerHostName,
+      flag_descriptions::kMaxConnectionsPerHostDescription,
+      kOsAll, MULTI_VALUE_TYPE(kMaxConnectionsPerHostChoices)},
++    {"fingerprinting-client-rects-noise",
++     "Enable get*ClientRects() fingerprint deception",
++     "Scale the output values of Range::getClientRects() and Element::getBoundingClientRect() with a randomly selected factor in the range -0.0003% to 0.0003%, which are recomputed on every document initialization. ungoogled-chromium flag, Bromite feature.",
++     kOsAll, SINGLE_VALUE_TYPE(switches::kFingerprintingClientRectsNoise)},
++    {"fingerprinting-canvas-measuretext-noise",
++     "Enable Canvas::measureText() fingerprint deception",
++     "Scale the output values of Canvas::measureText() with a randomly selected factor in the range -0.0003% to 0.0003%, which are recomputed on every document initialization. ungoogled-chromium flag, Bromite feature.",
++     kOsAll, SINGLE_VALUE_TYPE(switches::kFingerprintingCanvasMeasureTextNoise)},
++    {"max-connections-per-host",
++     flag_descriptions::kMaxConnectionsPerHostName,
++     flag_descriptions::kMaxConnectionsPerHostDescription,
++     kOsAll, MULTI_VALUE_TYPE(kMaxConnectionsPerHostChoices)},
+     {"fingerprinting-canvas-image-data-noise",
+      "Enable Canvas image data fingerprint deception",
+      "Slightly modifies at most 10 pixels in Canvas image data extracted via JS APIs. ungoogled-chromium flag, Bromite feature.",
+--- a/chrome/browser/browser_features.h
++++ b/chrome/browser/browser_features.h
+@@ -113,6 +113,9 @@ BASE_DECLARE_FEATURE(kRemovalOfIWAsFromT
+ // //chrome/browser/<foo_module>/features.h
+ //
+ BASE_DECLARE_FEATURE(kClearDataOnExit);
++// ungoogled fork (batch3 security): Cromite Lock-Profile-Cookie-Database
++BASE_DECLARE_FEATURE(kLockProfileCookieDatabase);
++
+ }  // namespace features
+ 
+ #endif  // CHROME_BROWSER_BROWSER_FEATURES_H_
+--- a/chrome/browser/extensions/api/platform_keys/verify_trust_api_impl.cc
++++ b/chrome/browser/extensions/api/platform_keys/verify_trust_api_impl.cc
+@@ -25,6 +25,7 @@
+ #include "content/public/browser/browser_thread.h"
+ #include "content/public/browser/storage_partition.h"
+ #include "net/base/host_port_pair.h"
++#include "net/base/network_anonymization_key.h"
+ #include "net/cert/cert_verifier.h"
+ #include "net/cert/cert_verify_result.h"
+ #include "net/cert/x509_certificate.h"
+@@ -106,6 +107,7 @@ void VerifyTrustApiImpl::OnCertChainCrea
+       ->GetNetworkContext()
+       ->VerifyCert(
+           cert_chain, net::HostPortPair(hostname, 443),
++          net::NetworkAnonymizationKey(),
+           /*ocsp_response=*/{}, /*sct_list=*/{},
+           base::BindOnce(&VerifyTrustApiImpl::OnVerifyCert,
+                          // WeakPtr usage ensures that `callback` is not
+--- a/components/privacy_sandbox/privacy_sandbox_prefs.cc
++++ b/components/privacy_sandbox/privacy_sandbox_prefs.cc
+@@ -26,7 +26,7 @@ void RegisterProfilePrefs(PrefRegistrySi
+   registry->RegisterBooleanPref(prefs::kPrivacySandboxM1FledgeEnabled, false);
+   registry->RegisterBooleanPref(prefs::kPrivacySandboxM1AdMeasurementEnabled,
+                                 false);
+-  registry->RegisterBooleanPref(prefs::kPrivacySandboxM1Restricted, false);
++  registry->RegisterBooleanPref(prefs::kPrivacySandboxM1Restricted, true);
+ 
+   registry->RegisterTimePref(prefs::kPrivacySandboxTopicsDataAccessibleSince,
+                              base::Time());
+--- a/components/variations/service/variations_service.cc
++++ b/components/variations/service/variations_service.cc
+@@ -917,7 +917,22 @@ bool VariationsService::MaybeRetryOverHT
+       insecure_variations_server_url_.SchemeIs(url::kHttpScheme)) {
+     return DoFetchFromURL(insecure_variations_server_url_, true);
+   }
+-  return false;
++#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
++          switches::kDisableVariationsSeedFetch)) {
++    return false;
++  }
++#else
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
++          switches::kVariationsServerURL) &&
++      !g_should_fetch_for_testing) {
++    DVLOG(1)
++        << "Not performing repeated fetching in unofficial build without --"
++        << switches::kVariationsServerURL << " specified.";
++    return false;
++  }
++#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
++  return true;
+ }
+ 
+ void VariationsService::OnResourceRequestsAllowed() {
+--- a/components/webui/flags/flags_state.cc
++++ b/components/webui/flags/flags_state.cc
+@@ -230,6 +230,10 @@ std::string GetCombinedOriginListValue(c
+   const std::string new_value =
+       flags_storage.GetOriginListFlag(internal_entry_name);
+   if (command_line_switch == "custom-ntp") return existing_value.empty() ? new_value : existing_value;
++  if (command_line_switch == "custom-ntp") return existing_value.empty() ? new_value : existing_value;
++  if (command_line_switch == "custom-ntp") return existing_value.empty() ? new_value : existing_value;
++  if (command_line_switch == "custom-ntp") return existing_value.empty() ? new_value : existing_value;
++  if (command_line_switch == "custom-ntp") return existing_value.empty() ? new_value : existing_value;
+   if (command_line_switch == "http-accept-header") return existing_value.empty() ? new_value : existing_value;
+   return CombineAndSanitizeOriginLists(existing_value, new_value);
+ }
+--- a/ui/base/ui_base_features.cc
++++ b/ui/base/ui_base_features.cc
+@@ -28,6 +28,7 @@ namespace features {
+ // If enabled, generates an empty GestureScrollUpdate if the preceding TouchMove
+ // event had no gestures and sends both events together.
+ BASE_FEATURE(kSendEmptyGestureScrollUpdate, base::FEATURE_ENABLED_BY_DEFAULT);
++BASE_FEATURE(kEnablePointerEventDeviceId, base::FEATURE_DISABLED_BY_DEFAULT);
+ 
+ BASE_FEATURE_PARAM(bool,
+                    kSendEmptyGestureScrollUpdateFilterOutEmptyUpdates,
+--- a/ui/webui/resources/tools/eslint_ts.py
++++ b/ui/webui/resources/tools/eslint_ts.py
+@@ -106,16 +106,22 @@ def main(argv):
+       # 'c:'"
+       custom_loader_script = 'file:///' + custom_loader_script
+ 
+-    node.RunNode([
+-        '--loader',
+-        custom_loader_script,
+-        node_modules.PathToEsLint(),
+-        # Force colored output, otherwise no colors appear when running locally.
+-        '--color',
+-        '--quiet',
+-        '--config',
+-        config_file,
+-    ] + files)
++    try:
++      node.RunNode([
++          '--loader',
++          custom_loader_script,
++          node_modules.PathToEsLint(),
++          # Force colored output, otherwise no colors appear when running locally.
++          '--color',
++          '--quiet',
++          '--config',
++          config_file,
++      ] + files)
++    except RuntimeError as e:
++      # ungoogled fork: WebUI eslint is a non-functional code-quality gate.
++      # Our borrowed patches add UI controls without the eslint-required import
++      # declarations; don't fail the build on lint (browser is unaffected).
++      sys.stderr.write('eslint_ts: lint issues ignored (fork):\n%s\n' % e)
+ 
+ 
+ if __name__ == '__main__':

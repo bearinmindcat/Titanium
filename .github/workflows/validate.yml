@@ -1,0 +1,41 @@
+name: Validate patch series
+# check every series entry exists, matches the tree, and is a well-formed diff
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every patch in patches/series exists
+        run: |
+          fail=0
+          while IFS= read -r p; do
+            case "$p" in ''|\#*) continue ;; esac
+            if [ ! -f "patches/$p" ]; then echo "::error::missing patch: patches/$p"; fail=1; fi
+          done < patches/series
+          exit $fail
+
+      - name: No orphan patches (present in patches/ but absent from the list)
+        run: |
+          while IFS= read -r rel; do
+            grep -qxF "$rel" patches/series || echo "::warning::orphan (not in patches/series): patches/$rel"
+          done < <(cd patches && find . -name '*.patch' | sed 's#^\./##' | sort)
+
+      - name: Every patch is a well-formed diff
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            if ! git apply --numstat "$f" >/dev/null 2>&1; then
+              echo "::error::malformed diff: $f"; fail=1
+            fi
+          done < <(find patches -name '*.patch')
+          exit $fail
+
+      - name: Summary
+        run: |
+          echo "patch files:    $(find patches -name '*.patch' | wc -l)"
+          echo "series entries: $(grep -vcE '^#|^[[:space:]]*$' patches/series)"

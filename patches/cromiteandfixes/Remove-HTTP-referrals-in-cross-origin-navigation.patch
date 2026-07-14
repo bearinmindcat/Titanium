@@ -1,0 +1,164 @@
+From: uazo <uazo@users.noreply.github.com>
+Date: Wed, 21 Sep 2022 12:28:17 +0000
+Subject: Remove HTTP referrals in cross origin navigation
+
+The patch removes the referrals if the navigation is cross-origin and occurs in the top frame.
+The value is not removed across iframes because the referrals are statically defined
+by the HTML and the Javascript of the page, and therefore they do not tell anything about the
+user. Also, some services may not work, such as video iframes.
+A preference is also introduced to completely removes referrals management, for advanced users.
+
+Original License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+License: GPL-3.0-only - https://spdx.org/licenses/GPL-3.0-only.html
+---
+--- a/chrome/browser/net/system_network_context_manager.cc
++++ b/chrome/browser/net/system_network_context_manager.cc
+@@ -675,6 +675,9 @@ SystemNetworkContextManager::SystemNetwo
+       base::BindRepeating(&SystemNetworkContextManager::UpdateReferrersEnabled,
+                           base::Unretained(this)));
+ 
++  local_state_->SetDefaultPrefValue(
++      prefs::kReferrersPolicy, base::Value(2));
++
+   pref_change_registrar_.Add(
+       prefs::kExplicitlyAllowedNetworkPorts,
+       base::BindRepeating(
+@@ -753,6 +756,7 @@ void SystemNetworkContextManager::Regist
+   // the system NetworkContext, and the per-profile pref values are used for
+   // the profile NetworkContexts.
+   registry->RegisterBooleanPref(prefs::kEnableReferrers, true);
++  registry->RegisterIntegerPref(prefs::kReferrersPolicy, 2);
+ 
+   registry->RegisterBooleanPref(prefs::kQuickCheckEnabled, true);
+ 
+--- a/chrome/browser/resources/settings/privacy_page/privacy_page.html
++++ b/chrome/browser/resources/settings/privacy_page/privacy_page.html
+@@ -50,3 +50,13 @@
+       <div>[[dbdDeletionConfirmationToastLabel_]]</div>
+     </cr-toast>
+   </settings-section>
++    <div class="cr-row">
++      <div class="flex cr-padded-text" aria-hidden="true">
++        $i18n{referersPolicyTitle}
++      </div>
++      <settings-dropdown-menu id="referersPolicy" label="$i18n{referersPolicyTitle}"
++          pref="{{prefs.referrers_policy}}"
++          menu-options="[[referersPolicyOptions_]]"
++          on-settings-control-change="onReferersPolicyChanged_">
++      </settings-dropdown-menu>
++    </div>
+--- a/chrome/browser/resources/settings/privacy_page/privacy_page.ts
++++ b/chrome/browser/resources/settings/privacy_page/privacy_page.ts
+@@ -70,6 +70,17 @@ export class SettingsPrivacyPageElement
+         value: () => loadTimeData.getBoolean('isPrivacySandboxRestricted'),
+       },
+ 
++      referersPolicyOptions_: {
++        readOnly: true,
++        type: Array,
++        value() {
++          return [
++            {value: 2, name: loadTimeData.getString('noCrossOriginTopFramePolicy')},
++            {value: 1, name: loadTimeData.getString('standardRefererPolicy')},
++            {value: 0, name: loadTimeData.getString('disableRefererPolicy')},
++          ];
++        },
++      },
+       isPrivacySandboxRestrictedNoticeEnabled_: {
+         type: Boolean,
+         value: () =>
+@@ -97,6 +108,7 @@ export class SettingsPrivacyPageElement
+ 
+   declare private showClearBrowsingDataDialog_: boolean;
+   declare private showPrivacyGuideDialog_: boolean;
++  declare private referersPolicyOptions_: object[];
+   declare private isPrivacySandboxRestricted_: boolean;
+   declare private isPrivacySandboxRestrictedNoticeEnabled_: boolean;
+   declare private isAdPrivacyAvailable_: boolean;
+@@ -128,6 +140,12 @@ export class SettingsPrivacyPageElement
+     Router.getInstance().navigateTo(routes.COOKIES);
+   }
+ 
++  private onReferersPolicyChanged_(): void {
++    const policy =
++        this.getPref('referrers_policy').value;
++    this.setPrefValue('enable_referrers', policy != 0);
++  }
++
+   private onCbdDialogClosed_() {
+     Router.getInstance().navigateTo(routes.CLEAR_BROWSER_DATA.parent!);
+ 
+--- a/chrome/browser/ui/prefs/prefs_tab_helper.cc
++++ b/chrome/browser/ui/prefs/prefs_tab_helper.cc
+@@ -388,6 +388,8 @@ void PrefsTabHelper::RegisterProfilePref
+   registry->RegisterBooleanPref(
+       prefs::kEnableReferrers,
+       !base::FeatureList::IsEnabled(features::kNoReferrers));
++  registry->RegisterIntegerPref(
++      prefs::kReferrersPolicy, 2); // NoCrossOriginReferer
+   registry->RegisterBooleanPref(prefs::kEnableEncryptedMedia, true);
+   registry->RegisterBooleanPref(prefs::kScrollToTextFragmentEnabled, true);
+ #if BUILDFLAG(IS_ANDROID)
+--- a/components/download/content/internal/context_menu_download.cc
++++ b/components/download/content/internal/context_menu_download.cc
+@@ -12,6 +12,8 @@
+ #include "content/public/browser/web_contents.h"
+ #include "content/public/common/referrer.h"
+ #include "net/traffic_annotation/network_traffic_annotation.h"
++#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
++#include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
+ 
+ namespace download {
+ 
+@@ -31,6 +33,14 @@ void CreateContextMenuDownload(const GUR
+   content::Referrer referrer = content::Referrer::SanitizeForRequest(
+       url,
+       content::Referrer(referring_url.GetAsReferrer(), params.referrer_policy));
++  blink::RendererPreferences* render_prefs = web_contents->GetMutableRendererPrefs();
++  if (render_prefs->enable_referrers && render_prefs->referrers_policy == 2 &&
++        !net::registry_controlled_domains::SameDomainOrHost(
++          referring_url, url, net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES)) {
++    referrer = content::Referrer::SanitizeForRequest(
++      url,
++      content::Referrer(params.page_url.GetAsReferrer(), params.referrer_policy));
++  }
+   dl_params->set_referrer(referrer.url);
+   dl_params->set_referrer_policy(
+       content::Referrer::ReferrerPolicyForUrlRequest(referrer.policy));
+--- a/content/browser/renderer_host/navigation_request.cc
++++ b/content/browser/renderer_host/navigation_request.cc
+@@ -415,6 +415,15 @@ void AddAdditionalRequestHeaders(
+   *referrer = blink::mojom::Referrer(std::move(sanitized_referrer.first),
+                                      std::move(sanitized_referrer.second));
+ 
++  if (render_prefs.enable_referrers && render_prefs.referrers_policy == 2 &&
++        !net::registry_controlled_domains::SameDomainOrHost(
++          referrer->url, url, net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES) &&
++        frame_tree_node->IsOutermostMainFrame()) {
++    // remove referrer if the navigation is done on the top frame
++    *referrer =
++        blink::mojom::Referrer(GURL(), network::mojom::ReferrerPolicy::kNever);
++  }
++
+   // Next, set the HTTP Origin if needed.
+   std::optional<std::string> existing_origin =
+       headers->GetHeader(net::HttpRequestHeaders::kOrigin);
+@@ -10465,7 +10474,6 @@ void NavigationRequest::SetSourceSiteIns
+ void NavigationRequest::ForceEnableOriginTrials(
+     const std::vector<std::string>& trials) {
+   CHECK(!HasCommitted());
+-  commit_params_->force_enabled_origin_trials = trials;
+ }
+ 
+ network::CrossOriginEmbedderPolicy
+--- a/services/network/public/cpp/resource_request.h
++++ b/services/network/public/cpp/resource_request.h
+@@ -216,7 +216,7 @@ struct COMPONENT_EXPORT(NETWORK_CPP_BASE
+   std::vector<GURL> navigation_redirect_chain;
+ 
+   GURL referrer;
+-  net::ReferrerPolicy referrer_policy = net::ReferrerPolicy::NEVER_CLEAR;
++  net::ReferrerPolicy referrer_policy = net::ReferrerPolicy::REDUCE_GRANULARITY_ON_TRANSITION_CROSS_ORIGIN;
+   net::HttpRequestHeaders headers;
+   net::HttpRequestHeaders cors_exempt_headers;
+   int load_flags = 0;

@@ -1,0 +1,339 @@
+From: uazo <uazo@users.noreply.github.com>
+Date: Wed, 29 May 2024 13:43:50 +0000
+Subject: Enable Global Privacy Control
+
+License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+---
+--- a/chrome/app/settings_strings.grdp
++++ b/chrome/app/settings_strings.grdp
+@@ -1937,6 +1937,21 @@
+     <message name="IDS_SETTINGS_SECURITY_SAFE_BROWSING_STANDARD_WHAT_IT_DOES_HEADING" desc="Heading of the Safe Browsing standard protection column describing what it does">
+       What it does
+     </message>
++  <message name="IDS_SETTINGS_ENABLE_GPC" desc="">
++    Global Privacy Control "Sec-GPC"
++  </message>
++  <message name="IDS_SETTINGS_ENABLE_GPC_DIALOG_TITLE" desc="">
++    Global Privacy Control "Sec-GPC"
++  </message>
++  <message name="IDS_SETTINGS_ENABLE_GPC_DIALOG_TEXT" desc="">
++    Enables support for Global Privacy Control signals.
++
++Right to opt-out of sale or sharing: You may request that businesses stop selling or sharing your personal information (“opt-out”).
++
++Businesses cannot sell or share your personal information after they receive your opt-out request unless you later authorize them to do so again.
++
++Please note that it only applies to the states of California (under CCPA and CPRA) and Colorado (under CoPA).
++  </message>
+     <message name="IDS_SETTINGS_SECURITY_SAFE_BROWSING_STANDARD_WHAT_IT_DOES_CONTENT" desc="Content of the Safe Browsing standard protection column describing what it does">
+       Warns you about sites, downloads, and extensions that are known to be dangerous. You can turn off these warnings at any time. If you see a warning for legitimate content, you can <ph name="BEGIN_LINK">&lt;a target="_blank" href="https://safebrowsing.google.com/safebrowsing/report_error/"&gt;</ph>report an error<ph name="END_LINK">&lt;/a&gt;</ph>.
+     </message>
+--- a/chrome/browser/extensions/api/settings_private/prefs_util.cc
++++ b/chrome/browser/extensions/api/settings_private/prefs_util.cc
+@@ -285,6 +285,11 @@ const PrefsUtil::TypedPrefMap& PrefsUtil
+   (*s_allowlist)[::prefs::kSplitViewDragAndDropEnabled] =
+       settings_api::PrefType::kBoolean;
+ 
++  (*s_allowlist)[::prefs::kEnableReferrers] =
++      settings_api::PrefType::kBoolean;
++  (*s_allowlist)[::prefs::kReferrersPolicy] =
++      settings_api::PrefType::kNumber;
++
+   // Appearance settings.
+   (*s_allowlist)[::prefs::kCtrlTabMru] = settings_api::PrefType::kBoolean;
+   (*s_allowlist)[::prefs::kCurrentThemeID] = settings_api::PrefType::kString;
+@@ -445,6 +450,7 @@ const PrefsUtil::TypedPrefMap& PrefsUtil
+   (*s_allowlist)[::prefs::kBlockAll3pcToggleEnabled] =
+       settings_api::PrefType::kBoolean;
+   (*s_allowlist)[::prefs::kEnableDoNotTrack] = settings_api::PrefType::kBoolean;
++  (*s_allowlist)[::prefs::kEnableGPC] = settings_api::PrefType::kBoolean;
+ 
+   // Sync and personalization page.
+   (*s_allowlist)[::prefs::kSearchSuggestEnabled] =
+--- a/chrome/browser/renderer_preferences_util.cc
++++ b/chrome/browser/renderer_preferences_util.cc
+@@ -148,8 +148,11 @@ void UpdateFromSystemSettings(blink::Ren
+   prefs->caret_blink_interval =
+       ui::NativeTheme::GetInstanceForNativeUi()->caret_blink_interval();
+   prefs->enable_referrers = pref_service->GetBoolean(prefs::kEnableReferrers);
++  prefs->referrers_policy = pref_service->GetInteger(prefs::kReferrersPolicy);
+   prefs->enable_do_not_track =
+       pref_service->GetBoolean(prefs::kEnableDoNotTrack);
++  prefs->enable_gpc =
++      pref_service->GetBoolean(prefs::kEnableGPC);
+   prefs->enable_encrypted_media =
+       pref_service->GetBoolean(prefs::kEnableEncryptedMedia);
+ 
+--- a/chrome/browser/resources/settings/BUILD.gn
++++ b/chrome/browser/resources/settings/BUILD.gn
+@@ -133,6 +133,7 @@ build_webui("build") {
+     "performance_page/tab_discard/exception_tabbed_add_dialog.ts",
+     "privacy_page/cookies_page.ts",
+     "privacy_page/do_not_track_toggle.ts",
++    "privacy_page/gpc_toggle.ts",
+     "privacy_page/personalization_options.ts",
+     "privacy_page/privacy_guide/privacy_guide_ad_topics_fragment.ts",
+     "privacy_page/privacy_guide/privacy_guide_completion_fragment.ts",
+--- a/chrome/browser/resources/settings/privacy_page/cookies_page.html
++++ b/chrome/browser/resources/settings/privacy_page/cookies_page.html
+@@ -145,6 +145,8 @@
+     </h2>
+     <settings-do-not-track-toggle id="doNotTrack" prefs="{{prefs}}">
+     </settings-do-not-track-toggle>
++    <settings-gpc-toggle id="gpc" prefs="{{prefs}}">
++    </settings-gpc-toggle>
+     <cr-link-row id="siteDataTrigger" class="hr"
+         on-click="onSiteDataClick_" label="$i18n{cookiePageAllSitesLink}"
+         role-description="$i18n{subpageArrowRoleDescription}">
+--- a/chrome/browser/resources/settings/privacy_page/cookies_page.ts
++++ b/chrome/browser/resources/settings/privacy_page/cookies_page.ts
+@@ -22,6 +22,7 @@ import '../privacy_icons.html.js';
+ import '../settings_page/settings_subpage.js';
+ import '../settings_shared.css.js';
+ import '../site_settings/site_list.js';
++import './gpc_toggle.js';
+ import './do_not_track_toggle.js';
+ 
+ import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
+--- a/chrome/browser/ui/browser_ui_prefs.cc
++++ b/chrome/browser/ui/browser_ui_prefs.cc
+@@ -148,6 +148,7 @@ void RegisterBrowserUserPrefs(user_prefs
+   registry->RegisterBooleanPref(
+       prefs::kEnableDoNotTrack, false,
+       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
++  registry->RegisterBooleanPref(prefs::kEnableGPC, true);
+ #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+   registry->RegisterBooleanPref(prefs::kPrintPreviewUseSystemDefaultPrinter,
+                                 false);
+--- a/chrome/browser/ui/prefs/pref_watcher.cc
++++ b/chrome/browser/ui/prefs/pref_watcher.cc
+@@ -135,6 +135,8 @@ PrefWatcher::PrefWatcher(Profile* profil
+                                      renderer_callback);
+   profile_pref_change_registrar_.Add(prefs::kEnableReferrers,
+                                      renderer_callback);
++  profile_pref_change_registrar_.Add(prefs::kReferrersPolicy,
++                                     renderer_callback);
+   profile_pref_change_registrar_.Add(prefs::kEnableEncryptedMedia,
+                                      renderer_callback);
+   profile_pref_change_registrar_.Add(prefs::kWebRTCIPHandlingPolicy,
+@@ -152,6 +154,8 @@ PrefWatcher::PrefWatcher(Profile* profil
+                                      renderer_callback);
+   profile_pref_change_registrar_.Add(prefs::kEnableDoNotTrack,
+                                      renderer_callback);
++  profile_pref_change_registrar_.Add(prefs::kEnableGPC,
++                                     renderer_callback);
+ 
+ #if !BUILDFLAG(IS_MAC)
+   profile_pref_change_registrar_.Add(prefs::kFullscreenAllowed,
+--- a/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
++++ b/chrome/browser/ui/webui/settings/settings_localized_strings_provider.cc
+@@ -2331,6 +2331,9 @@ void AddPrivacyStrings(content::WebUIDat
+       {"doNotTrackDialogMessage", IDS_SETTINGS_ENABLE_DO_NOT_TRACK_DIALOG_TEXT},
+       {"doNotTrackDialogLearnMoreA11yLabel",
+        IDS_SETTINGS_ENABLE_DO_NOT_TRACK_DIALOG_LEARN_MORE_ACCESSIBILITY_LABEL},
++      {"gpc", IDS_SETTINGS_ENABLE_GPC},
++      {"gpcDialogTitle", IDS_SETTINGS_ENABLE_GPC_DIALOG_TITLE},
++      {"gpcDialogMessage", IDS_SETTINGS_ENABLE_GPC_DIALOG_TEXT},
+       // TODO(crbug.com/40122957): This string is no longer used. Remove.
+       {"permissionsPageTitle", IDS_SETTINGS_PERMISSIONS},
+       {"siteSettingsSublabel", IDS_SETTINGS_PERMISSIONS_DESCRIPTION},
+@@ -2341,6 +2344,10 @@ void AddPrivacyStrings(content::WebUIDat
+       {"advancedProtectionProgramDesc",
+        IDS_SETTINGS_ADVANCED_PROTECTION_PROGRAM_DESC},
+       {"secureConnectionsSectionTitle",
++      {"referersPolicyTitle", IDS_REFERERS_POLICY_TITLE},
++      {"standardRefererPolicy", IDS_STANDARD_REFERER_POLICY_TITLE},
++      {"noCrossOriginTopFramePolicy", IDS_NO_CROSS_ORIGIN_TOP_FRAME_POLICY_TITLE},
++      {"disableRefererPolicy", IDS_DISABLE_REFERER_POLICY_TITLE},
+        IDS_SETTINGS_SECURE_CONNECTIONS_SECTION_TITLE},
+       {"secureConnectionsSectionDescription",
+        IDS_SETTINGS_SECURE_CONNECTIONS_SECTION_DESCRIPTION},
+--- a/content/browser/loader/browser_initiated_resource_request.cc
++++ b/content/browser/loader/browser_initiated_resource_request.cc
+@@ -30,6 +30,12 @@ void UpdateAdditionalHeadersForBrowserIn
+     }
+     headers->SetHeaderIfMissing(blink::kDoNotTrackHeader, "1");
+   }
++  if (renderer_preferences.enable_gpc) {
++    if (should_update_existing_headers) {
++      headers->RemoveHeader(blink::kSecGPCHeader);
++    }
++    headers->SetHeaderIfMissing(blink::kSecGPCHeader, "1");
++  }
+ 
+   // TODO(crbug.com/40833603): WARNING: This bypasses the permissions policy.
+   // Unfortunately, workers lack a permissions policy and to derive proper hints
+--- a/content/renderer/render_frame_impl.cc
++++ b/content/renderer/render_frame_impl.cc
+@@ -555,10 +555,6 @@ void FillNavigationParamsRequest(
+         common_params.initiator_origin.value();
+   }
+ 
+-  navigation_params->initiator_origin_trial_features = {
+-      common_params.initiator_origin_trial_features.begin(),
+-      common_params.initiator_origin_trial_features.end()};
+-
+   navigation_params->was_discarded = commit_params.was_discarded;
+   navigation_params->document_ukm_source_id =
+       commit_params.document_ukm_source_id;
+@@ -581,8 +577,8 @@ void FillNavigationParamsRequest(
+   navigation_params->had_transient_user_activation =
+       common_params.has_possibly_filtered_user_gesture;
+ 
+-  navigation_params->force_enabled_origin_trials = base::ToVector(
+-      commit_params.force_enabled_origin_trials, &WebString::FromAscii);
++  std::vector<WebString> force_enabled_origin_trials;
++  navigation_params->force_enabled_origin_trials = force_enabled_origin_trials;
+ 
+   navigation_params->early_hints_preloaded_resources.reserve(
+       commit_params.early_hints_preloaded_resources.size());
+@@ -678,7 +674,7 @@ blink::mojom::CommonNavigationParamsPtr
+       info->url_request.HasUserGesture(),
+       info->url_request.HasTextFragmentToken(),
+       info->should_check_main_world_content_security_policy,
+-      info->initiator_origin_trial_features, info->href_translate.Latin1(),
++      /*initiator_origin_trial_features*/std::vector<int>(), info->href_translate.Latin1(),
+       is_history_navigation_in_new_child_frame, info->input_start,
+       request_destination);
+ }
+@@ -4415,6 +4411,10 @@ bool RenderFrameImpl::SwapOutAndDeleteTh
+     remote_frame->Close(blink::DetachReason::kFrameDeletion);
+     return false;
+   }
++  if (GetWebView()->GetRendererPreferences().enable_gpc) {
++    request.SetHttpHeaderField(
++        blink::WebString::FromUTF8(blink::kSecGPCHeader), "1");
++  }
+ 
+   if (is_loading)
+     remote_frame->DidStartLoading();
+--- a/third_party/blink/common/loader/loader_constants.cc
++++ b/third_party/blink/common/loader/loader_constants.cc
+@@ -7,5 +7,6 @@
+ namespace blink {
+ 
+ const char kDoNotTrackHeader[] = "DNT";
++const char kSecGPCHeader[] = "Sec-GPC";
+ 
+ }  // namespace blink
+--- a/third_party/blink/common/renderer_preferences/renderer_preferences_mojom_traits.cc
++++ b/third_party/blink/common/renderer_preferences/renderer_preferences_mojom_traits.cc
+@@ -54,6 +54,7 @@ bool StructTraits<blink::mojom::Renderer
+   out->enable_referrers = data.enable_referrers();
+   out->allow_cross_origin_auth_prompt = data.allow_cross_origin_auth_prompt();
+   out->enable_do_not_track = data.enable_do_not_track();
++  out->enable_gpc = data.enable_gpc();
+   out->enable_encrypted_media = data.enable_encrypted_media();
+ 
+   if (!data.ReadWebrtcIpHandlingPolicy(&out->webrtc_ip_handling_policy))
+--- a/third_party/blink/public/common/loader/loader_constants.h
++++ b/third_party/blink/public/common/loader/loader_constants.h
+@@ -11,6 +11,7 @@ namespace blink {
+ 
+ // HTTP header set in requests to indicate they should be marked DoNotTrack.
+ BLINK_COMMON_EXPORT extern const char kDoNotTrackHeader[];
++BLINK_COMMON_EXPORT extern const char kSecGPCHeader[];
+ 
+ // These values indicate the load progress constants shared between both
+ // //content and //blink.
+--- a/third_party/blink/public/common/renderer_preferences/renderer_preferences.h
++++ b/third_party/blink/public/common/renderer_preferences/renderer_preferences.h
+@@ -50,8 +50,10 @@ struct BLINK_COMMON_EXPORT RendererPrefe
+   std::optional<base::TimeDelta> caret_blink_interval;
+   bool use_custom_colors{true};
+   bool enable_referrers{true};
++  uint32_t referrers_policy{2};
+   bool allow_cross_origin_auth_prompt{false};
+   bool enable_do_not_track{false};
++  bool enable_gpc{false};
+   bool enable_encrypted_media{true};
+ #if BUILDFLAG(IS_CHROMEOS)
+   bool use_overlay_scrollbar{false};
+--- a/third_party/blink/public/common/renderer_preferences/renderer_preferences_mojom_traits.h
++++ b/third_party/blink/public/common/renderer_preferences/renderer_preferences_mojom_traits.h
+@@ -128,6 +128,11 @@ struct BLINK_COMMON_EXPORT
+     return data.enable_do_not_track;
+   }
+ 
++  static const bool& enable_gpc(
++      const ::blink::RendererPreferences& data) {
++    return data.enable_gpc;
++  }
++
+   static const bool& enable_encrypted_media(
+       const ::blink::RendererPreferences& data) {
+     return data.enable_encrypted_media;
+--- a/third_party/blink/public/mojom/renderer_preferences.mojom
++++ b/third_party/blink/public/mojom/renderer_preferences.mojom
+@@ -89,6 +89,8 @@ struct RendererPreferences {
+   // Set to true to indicate that the preference to set DNT to 1 is enabled.
+   bool enable_do_not_track = false;
+ 
++  bool enable_gpc = false;
++
+   // Whether to allow the use of Encrypted Media Extensions (EME), except for
+   // the use of Clear Key key system which is always allowed as required by the
+   // spec.
+--- a/third_party/blink/renderer/bindings/idl_in_modules.gni
++++ b/third_party/blink/renderer/bindings/idl_in_modules.gni
+@@ -1297,6 +1297,11 @@ static_idl_files_in_modules = [
+   "//third_party/blink/renderer/modules/xr/xr_webgl_sub_image.idl",
+ ]
+ 
++static_idl_files_in_modules += [
++  "//third_party/blink/renderer/modules/global_privacy_control/navigator_global_privacy_control.idl",
++  "//third_party/blink/renderer/modules/global_privacy_control/worker_navigator_global_privacy_control.idl",
++]
++
+ # Direct Sockets
+ # This uses target_os rather than current_os (which is what is_android is set
+ # from) for the case of generating the v8 context snapshot for android. When
+--- a/third_party/blink/renderer/core/exported/web_view_impl.cc
++++ b/third_party/blink/renderer/core/exported/web_view_impl.cc
+@@ -3634,6 +3634,9 @@ void WebViewImpl::UpdateRendererPreferen
+   GetSettings()->SetCaretBrowsingEnabled(
+       renderer_preferences_.caret_browsing_enabled);
+ 
++  WebRuntimeFeatures::EnableGlobalPrivacyControl(
++    renderer_preferences_.enable_gpc);
++
+ #if BUILDFLAG(IS_OZONE)
+   GetSettings()->SetSelectionClipboardBufferAvailable(
+       renderer_preferences_.selection_clipboard_buffer_available);
+--- a/third_party/blink/renderer/modules/BUILD.gn
++++ b/third_party/blink/renderer/modules/BUILD.gn
+@@ -167,6 +167,10 @@ component("modules") {
+     "//third_party/blink/renderer/modules/xr",
+   ]
+ 
++  sub_modules += [
++    "//third_party/blink/renderer/modules/global_privacy_control",
++  ]
++
+   # This uses target_os rather than current_os (which is what is_android is set
+   # from) for the case of generating the v8 context snapshot for android. When
+   # generating the snapshot for android, blink is compiled with
+--- a/third_party/blink/renderer/modules/service_worker/web_service_worker_fetch_context_impl.cc
++++ b/third_party/blink/renderer/modules/service_worker/web_service_worker_fetch_context_impl.cc
+@@ -152,6 +152,9 @@ void WebServiceWorkerFetchContextImpl::F
+   if (renderer_preferences_.enable_do_not_track) {
+     request.SetHttpHeaderField(WebString::FromUtf8(kDoNotTrackHeader), "1");
+   }
++  if (renderer_preferences_.enable_gpc) {
++    request.SetHttpHeaderField(WebString::FromUTF8(kSecGPCHeader), "1");
++  }
+   auto url_request_extra_data = base::MakeRefCounted<WebURLRequestExtraData>();
+   url_request_extra_data->set_originated_from_service_worker(true);
+ 
+--- a/third_party/blink/renderer/platform/loader/fetch/url_loader/dedicated_or_shared_worker_global_scope_context_impl.cc
++++ b/third_party/blink/renderer/platform/loader/fetch/url_loader/dedicated_or_shared_worker_global_scope_context_impl.cc
+@@ -379,6 +379,9 @@ void DedicatedOrSharedWorkerGlobalScopeC
+   if (renderer_preferences_.enable_do_not_track) {
+     request.SetHttpHeaderField(WebString::FromUtf8(kDoNotTrackHeader), "1");
+   }
++  if (renderer_preferences_.enable_gpc) {
++    request.SetHttpHeaderField(WebString::FromUTF8(kSecGPCHeader), "1");
++  }
+ 
+   auto url_request_extra_data = base::MakeRefCounted<WebURLRequestExtraData>();
+   request.SetURLRequestExtraData(std::move(url_request_extra_data));

@@ -1,0 +1,28 @@
+From: csagan5 <32685696+csagan5@users.noreply.github.com>
+Date: Sat, 5 Sep 2020 21:38:15 +0200
+Subject: Hardening against incognito mode detection
+
+License: GPL-3.0-only - https://spdx.org/licenses/GPL-3.0-only.html
+---
+--- a/storage/browser/quota/quota_manager_impl.cc
++++ b/storage/browser/quota/quota_manager_impl.cc
+@@ -1682,7 +1682,7 @@ int64_t QuotaManagerImpl::GetQuotaForSto
+     return kNoLimit;
+   }
+ 
+-  if (special_storage_policy_ && special_storage_policy_->IsStorageSessionOnly(
++  if (special_storage_policy_ && ((false)) && special_storage_policy_->IsStorageSessionOnly(
+                                      storage_key.origin().GetURL())) {
+     return settings.session_only_per_storage_key_quota;
+   }
+--- a/storage/browser/quota/quota_settings.cc
++++ b/storage/browser/quota/quota_settings.cc
+@@ -57,7 +57,7 @@ std::optional<QuotaSettings> CalculateNo
+   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                 base::BlockingType::MAY_BLOCK);
+ 
+-  if (is_incognito &&
++  if ((false) && is_incognito &&
+       !base::FeatureList::IsEnabled(features::kIncreaseIncognitoStorageQuota)) {
+     return CalculateIncognitoDynamicSettings(
+         device_info_helper->AmountOfPhysicalMemory());

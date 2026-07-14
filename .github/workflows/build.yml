@@ -1,0 +1,26 @@
+name: Build (self-hosted)
+# Full Chromium builds need a self-hosted runner. Wire runs-on and flip if:false.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "ninja target"
+        default: "chrome"
+jobs:
+  build:
+    # runs-on: [self-hosted, linux, x64]   # <-- your runner
+    runs-on: ubuntu-latest
+    if: false                              # <-- flip to true once a runner is attached
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch + prepare source via the vendored buildkit
+        run: |
+          echo "See docs/REBUILD.md:"
+          echo "python3 utils/downloads.py retrieve/unpack -> build/src"
+          echo "python3 utils/prune_binaries.py build/src pruning.list"
+          echo "python3 utils/patches.py apply build/src patches   # UGC base + Titanium layer"
+          echo "python3 utils/domain_substitution.py apply ... build/src"
+      - name: gn gen + ninja
+        run: |
+          echo "cp args.gn <src>/out/Secure/args.gn"
+          echo "gn gen out/Secure && ninja -C out/Secure ${{ github.event.inputs.target }} chrome_sandbox"

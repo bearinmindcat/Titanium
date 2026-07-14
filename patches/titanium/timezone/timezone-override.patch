@@ -1,0 +1,43 @@
+--- a/components/content_settings/core/common/content_settings.cc
++++ b/components/content_settings/core/common/content_settings.cc
+@@ -109,12 +109,14 @@ bool RendererContentSettingRules::IsRend
+          content_type == ContentSettingsType::JAVASCRIPT ||
+          content_type == ContentSettingsType::POPUPS ||
+          content_type == ContentSettingsType::MIXEDSCRIPT ||
+-         content_type == ContentSettingsType::AUTO_DARK_WEB_CONTENT;
++         content_type == ContentSettingsType::AUTO_DARK_WEB_CONTENT ||
++         content_type == ContentSettingsType::TIMEZONE_OVERRIDE;
+ }
+ 
+ void RendererContentSettingRules::FilterRulesByOutermostMainFrameURL(
+     const GURL& outermost_main_frame_url) {
+   FilterRulesForType(mixed_content_rules, outermost_main_frame_url);
++  FilterRulesForType(timezone_rules, outermost_main_frame_url);
+ }
+ 
+ RendererContentSettingRules::RendererContentSettingRules() = default;
+--- a/components/content_settings/core/common/content_settings_types.mojom
++++ b/components/content_settings/core/common/content_settings_types.mojom
+@@ -487,5 +487,10 @@ enum ContentSettingsType {
+   // - ALLOW: Skip the prompt and allow adding sub apps.
+   // - BLOCK: Skip the prompt and block adding sub apps.
+   SUB_APPS_WITHOUT_PROMPTS,
++
++  // ungoogled/bromite: per-site timezone spoofing (Timezone-customization).
++  // 150 moved ContentSettingsType to this mojom enum, so the value is added
++  // here directly rather than via the bromite_content_settings/TIMEZONE.inc overlay.
++  TIMEZONE_OVERRIDE,
+ };
+ // LINT.ThenChange(//components/content_settings/core/browser/content_settings_uma_util.cc:kHistogramValue)
+--- a/chrome/browser/ui/webui/settings/site_settings_helper.cc
++++ b/chrome/browser/ui/webui/settings/site_settings_helper.cc
+@@ -260,6 +260,9 @@ constexpr auto kContentSettingsTypeGroup
+     {ContentSettingsType::SUSPICIOUS_NOTIFICATION_SHOW_ORIGINAL, nullptr},
+     {ContentSettingsType::LOCAL_NETWORK_ACCESS, nullptr},
+     {ContentSettingsType::SUB_APPS_WITHOUT_PROMPTS, nullptr},
++    // ungoogled: timezone spoofing (renderer content setting; not yet in the
++    // Site Settings WebUI — Option B will give it a "timezone-override" group).
++    {ContentSettingsType::TIMEZONE_OVERRIDE, nullptr},
+ });
+ 
+ static_assert(

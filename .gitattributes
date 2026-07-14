@@ -1,0 +1,7 @@
+# force LF (CRLF breaks .patch application)
+* text=auto eol=lf
+*.patch text eol=lf
+*.tar.xz binary
+*.tar.gz binary
+
+*.patch linguist-language=C++

@@ -1,0 +1,725 @@
+--- /dev/null
++++ b/chrome/browser/resources/settings/self_host_sync_page/self_host_sync_page.html
+@@ -0,0 +1,170 @@
++<style include="cr-shared-style settings-shared">
++  cr-view-manager [hidden-by-search],
++  cr-view-manager[show-all] [slot=view][data-parent-view-id] {
++    display: none;
++  }
++
++  .secondary {
++    color: var(--cr-secondary-text-color);
++  }
++
++  /* A block styled like Brave's "Override Sync server URL" flag entry. */
++  .flag-box {
++    border-top: var(--cr-separator-line);
++    padding: 16px var(--cr-section-padding);
++  }
++
++  .flag-title {
++    font-weight: 500;
++    padding-bottom: 8px;
++  }
++
++  .flag-desc {
++    color: var(--cr-secondary-text-color);
++    font-size: 92%;
++    line-height: 1.5;
++    padding-bottom: 12px;
++  }
++
++  /* Rounded outlined text box (server input + sync-code area). */
++  .rounded-box {
++    background-color: transparent;
++    border: 1px solid var(--cr-fallback-color-neutral-outline,
++        rgba(255, 255, 255, 0.25));
++    border-radius: 8px;
++    box-sizing: border-box;
++    color: var(--cr-primary-text-color);
++    font-family: inherit;
++    font-size: inherit;
++    outline: none;
++    padding: 12px;
++    width: 100%;
++  }
++
++  .rounded-box:focus {
++    border-color: var(--cr-focus-outline-color, #8ab4f8);
++    border-width: 2px;
++    padding: 11px;
++  }
++
++  .rounded-box::placeholder {
++    color: var(--cr-secondary-text-color);
++  }
++
++  .code-box {
++    resize: vertical;
++  }
++
++  .word-count {
++    color: var(--cr-secondary-text-color);
++    font-size: 92%;
++    padding-top: 8px;
++  }
++
++  .flag-link {
++    color: var(--cr-link-color);
++    display: inline-block;
++    padding-top: 12px;
++    text-decoration: none;
++    word-break: break-all;
++  }
++
++  .flag-link:hover {
++    text-decoration: underline;
++  }
++
++  .btn-row {
++    display: flex;
++    gap: 8px;
++    justify-content: flex-end;
++    padding-top: 12px;
++  }
++</style>
++
++<cr-view-manager id="viewManager" show-all$="[[shouldShowAll]]"
++    class="cr-centered-card-container">
++  <settings-section slot="view" id="main"
++      route-path$="[[routes_.SELF_HOST_SYNC.path]]"
++      page-title="$i18n{selfHostSyncPageTitle}">
++    <div class="cr-row first">
++      <div class="flex">Server status</div>
++      <div class="secondary">[[statusText_]]</div>
++    </div>
++
++    <div class="flag-box">
++      <div class="flag-title">Sync server URL</div>
++      <div class="flag-desc">
++        Allows you to use a self hosted server with Lite Sync. You can learn
++        more about the server implementation in the repository link mentioned
++        below. Note: Only HTTPS URLs are supported by default. HTTP URLs are
++        only allowed for potentially trustworthy origins like localhost.
++        Insecure URLs that don't meet these requirements will be ignored in
++        favor of the official Brave-hosted server – Mac, Windows, Linux,
++        ChromeOS, Android
++      </div>
++      <input id="server" class="rounded-box" type="text" spellcheck="false"
++          on-change="onServerChange_">
++      <a class="flag-link" target="_blank"
++          href="https://github.com/luxzg/go-sync">
++        https://github.com/luxzg/go-sync
++      </a>
++    </div>
++
++    <div class="flag-box">
++      <div class="flag-title">Enter a sync code</div>
++      <div class="flag-desc">
++        Enter your sync chain passphrase below. (24-word code)
++      </div>
++      <textarea id="code" class="rounded-box code-box" rows="3"
++          spellcheck="false"
++          on-change="onCodeChange_" on-input="onCodeInput_"></textarea>
++      <div class="word-count">Word count: [[wordCount_]]</div>
++      <div class="btn-row">
++        <cr-button on-click="onGenerateClick_">Generate</cr-button>
++        <cr-button on-click="onCopyClick_">Copy</cr-button>
++      </div>
++    </div>
++
++    <div class="flag-box">
++      <div class="flag-title">Backup sync profile</div>
++      <div class="flag-desc">
++        Export your entire profile — including bookmarks, history, passwords,
++        autofill data, extensions, open tabs, and these sync settings — to a
++        single .zip file, or restore one that you exported earlier. Importing
++        replaces your current profile and relaunches the browser to apply it.
++      </div>
++      <div class="btn-row">
++        <cr-button on-click="onExportClick_">Export all</cr-button>
++        <cr-button on-click="onImportClick_">Import all</cr-button>
++      </div>
++    </div>
++
++    <cr-link-row id="whatToSyncRow" class="hr" label="What to sync"
++        sub-label="Choose which data types are synced"
++        on-click="onWhatToSyncClick_"
++        role-description="$i18n{subpageArrowRoleDescription}">
++    </cr-link-row>
++  </settings-section>
++
++  <template is="dom-if"
++      if="[[renderSyncTypes_(currentRoute, inSearchMode)]]" restamp>
++    <settings-subpage slot="view" id="syncTypes" data-parent-view-id="main"
++        route-path$="[[routes_.SYNC_TYPES.path]]" page-title="What to sync"
++        class="cr-centered-card-container">
++      <div class="cr-row first">
++        <div class="secondary flex">
++          Turn individual data types on or off. Changes take effect
++          immediately.
++        </div>
++      </div>
++      <template is="dom-repeat" items="[[typeRows_]]">
++        <div class="cr-row">
++          <div class="flex">[[item.label]]</div>
++          <cr-toggle checked="[[item.checked]]" data-name$="[[item.name]]"
++              on-change="onTypeToggle_" aria-label="[[item.label]]">
++          </cr-toggle>
++        </div>
++      </template>
++    </settings-subpage>
++  </template>
++</cr-view-manager>
+--- /dev/null
++++ b/chrome/browser/resources/settings/self_host_sync_page/self_host_sync_page.ts
+@@ -0,0 +1,219 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++/**
++ * @fileoverview
++ * 'settings-self-host-sync-page' is the top-level "Sync settings" section for
++ * account-less self-hosted sync. It hosts a main view (server, sync code,
++ * profile backup) and a "What to sync" sub-page.
++ */
++import 'chrome://resources/cr_elements/cr_shared_style.css.js';
++import 'chrome://resources/cr_elements/cr_button/cr_button.js';
++import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
++import 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
++import 'chrome://resources/cr_elements/cr_view_manager/cr_view_manager.js';
++import '/shared/settings/prefs/prefs.js';
++import '../i18n_setup.js';
++import '../settings_page/settings_section.js';
++import '../settings_page/settings_subpage.js';
++import '../settings_shared.css.js';
++
++import type {CrToggleElement} from 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
++import type {CrViewManagerElement} from 'chrome://resources/cr_elements/cr_view_manager/cr_view_manager.js';
++import {sendWithPromise} from 'chrome://resources/js/cr.js';
++import {beforeNextRender, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
++import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
++
++import {routes} from '../route.js';
++import {RouteObserverMixin, Router} from '../router.js';
++import type {Route, SettingsRoutes} from '../router.js';
++import type {SettingsPlugin} from '../settings_main/settings_plugin.js';
++import {SearchableViewContainerMixin} from '../settings_page/searchable_view_container_mixin.js';
++
++import {getTemplate} from './self_host_sync_page.html.js';
++
++const CODE_PREF = 'sync.selfhost_sync_code';
++const SERVER_PREF = 'sync.selfhost_server_url';
++
++interface TypeRow {
++  name: string;
++  label: string;
++  checked: boolean;
++}
++
++const TYPE_ROWS: Array<{name: string, label: string}> = [
++  {name: 'bookmarks', label: 'Bookmarks'},
++  {name: 'history', label: 'History'},
++  {name: 'passwords', label: 'Passwords'},
++  {name: 'autofill', label: 'Autofill'},
++  {name: 'extensions', label: 'Extensions'},
++  {name: 'tabs', label: 'Tabs'},
++  {name: 'preferences', label: 'Preferences'},
++];
++
++interface SelfHostSyncState {
++  online: boolean;
++  types: {[name: string]: boolean};
++}
++
++export interface SettingsSelfHostSyncPageElement {
++  $: {
++    viewManager: CrViewManagerElement,
++    server: HTMLInputElement,
++    code: HTMLTextAreaElement,
++  };
++}
++
++const SettingsSelfHostSyncPageElementBase =
++    SearchableViewContainerMixin(PrefsMixin(RouteObserverMixin(PolymerElement)));
++
++export class SettingsSelfHostSyncPageElement extends
++    SettingsSelfHostSyncPageElementBase implements SettingsPlugin {
++  static get is() {
++    return 'settings-self-host-sync-page';
++  }
++
++  static get template() {
++    return getTemplate();
++  }
++
++  static get properties() {
++    return {
++      prefs: {type: Object, observer: 'populateFields_'},
++      routes_: {type: Object, value: () => routes},
++      statusText_: {type: String, value: '…'},
++      typeRows_: {
++        type: Array,
++        value: () => TYPE_ROWS.map(r => ({...r, checked: false})),
++      },
++      wordCount_: {type: Number, value: 0},
++    };
++  }
++
++  declare prefs: {[key: string]: any};
++  declare private routes_: SettingsRoutes;
++  declare private statusText_: string;
++  declare private typeRows_: TypeRow[];
++  declare private wordCount_: number;
++
++  override ready() {
++    super.ready();
++    this.populateFields_();
++  }
++
++  override connectedCallback() {
++    super.connectedCallback();
++    this.refreshState_();
++  }
++
++  override currentRouteChanged(newRoute: Route, oldRoute?: Route) {
++    super.currentRouteChanged(newRoute, oldRoute);
++    // Only the dedicated child route shows the "What to sync" sub-page; every
++    // other route that renders this element shows the main view.
++    queueMicrotask(async () => {
++      const viewId = newRoute === routes.SYNC_TYPES ? 'syncTypes' : 'main';
++      if (!this.$.viewManager.querySelector(`#${viewId}`)) {
++        // The sub-page view is stamped lazily; wait for it to render.
++        await this.beforeNextRenderPromise_();
++      }
++      if (this.$.viewManager.querySelector(`#${viewId}`)) {
++        this.$.viewManager.switchView(viewId, 'no-animation', 'no-animation');
++      }
++    });
++  }
++
++  private beforeNextRenderPromise_(): Promise<void> {
++    return new Promise(resolve => beforeNextRender(this, resolve));
++  }
++
++  private renderSyncTypes_(): boolean {
++    return this.inSearchMode || this.currentRoute === routes.SYNC_TYPES;
++  }
++
++  private onWhatToSyncClick_() {
++    Router.getInstance().navigateTo(routes.SYNC_TYPES);
++  }
++
++  // The server/code fields are plain <input>/<textarea>, so their values must
++  // be seeded from the prefs manually (runs on ready and whenever prefs load).
++  private populateFields_() {
++    const server =
++        this.shadowRoot?.querySelector<HTMLInputElement>('#server');
++    if (server) {
++      server.value = (this.get(`prefs.${SERVER_PREF}.value`) as string) || '';
++    }
++    // The sync-code box stays blank by default (like Brave's "Enter a sync
++    // code" dialog); the saved code is not shown back.
++    const code = this.shadowRoot?.querySelector<HTMLTextAreaElement>('#code');
++    if (code) {
++      code.value = '';
++    }
++  }
++
++  private refreshState_() {
++    sendWithPromise('getSelfHostSyncState').then(result => {
++      const state = result as SelfHostSyncState;
++      this.statusText_ = state.online ? 'ONLINE' : 'OFFLINE';
++      this.typeRows_ =
++          TYPE_ROWS.map(r => ({...r, checked: state.types[r.name] === true}));
++    });
++  }
++
++  private onServerChange_() {
++    this.setPrefValue(SERVER_PREF, this.$.server.value.trim());
++  }
++
++  private onCodeChange_() {
++    // Only persist a non-empty code, so leaving the (blank-by-default) box
++    // untouched never wipes a previously-saved code.
++    const value = this.$.code.value.trim();
++    if (value) {
++      this.setPrefValue(CODE_PREF, value);
++    }
++  }
++
++  private onCodeInput_() {
++    const words =
++        this.$.code.value.trim().split(/\s+/).filter(w => w.length > 0);
++    this.wordCount_ = words.length;
++  }
++
++  private onGenerateClick_() {
++    sendWithPromise('generateSelfHostSyncCode').then(result => {
++      const code = result as string;
++      this.setPrefValue(CODE_PREF, code);
++      this.$.code.value = code;
++      this.onCodeInput_();
++    });
++  }
++
++  private onCopyClick_() {
++    navigator.clipboard.writeText(this.$.code.value);
++  }
++
++  private onTypeToggle_(e: Event) {
++    const toggle = e.target as CrToggleElement;
++    const name = toggle.dataset['name'];
++    if (name) {
++      chrome.send('setSelfHostSyncType', [name, toggle.checked]);
++    }
++  }
++
++  private onExportClick_() {
++    chrome.send('exportSelfHostProfile');
++  }
++
++  private onImportClick_() {
++    chrome.send('importSelfHostProfile');
++  }
++}
++
++declare global {
++  interface HTMLElementTagNameMap {
++    'settings-self-host-sync-page': SettingsSelfHostSyncPageElement;
++  }
++}
++
++customElements.define(
++    SettingsSelfHostSyncPageElement.is, SettingsSelfHostSyncPageElement);
+--- /dev/null
++++ b/chrome/browser/ui/webui/settings/self_host_sync_handler.cc
+@@ -0,0 +1,227 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/webui/settings/self_host_sync_handler.h"
++
++#include <optional>
++#include <string>
++
++#include "base/files/file_path.h"
++#include "base/files/file_util.h"
++#include "base/functional/bind.h"
++#include "base/task/thread_pool.h"
++#include "chrome/browser/lifetime/application_lifetime.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/sync/sync_service_factory.h"
++#include "components/sync/base/user_selectable_type.h"
++#include "components/sync/service/self_host_sync_code.h"
++#include "components/sync/service/sync_service.h"
++#include "components/sync/service/sync_user_settings.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/browser/web_ui.h"
++#include "third_party/zlib/google/zip.h"
++#include "ui/shell_dialogs/select_file_policy.h"
++#include "ui/shell_dialogs/selected_file_info.h"
++
++namespace settings {
++
++namespace {
++
++// The data types exposed as toggles, paired with the JS-side string ids.
++struct TypeRow {
++  const char* name;
++  syncer::UserSelectableType type;
++};
++
++constexpr TypeRow kTypeRows[] = {
++    {"bookmarks", syncer::UserSelectableType::kBookmarks},
++    {"history", syncer::UserSelectableType::kHistory},
++    {"passwords", syncer::UserSelectableType::kPasswords},
++    {"autofill", syncer::UserSelectableType::kAutofill},
++    {"extensions", syncer::UserSelectableType::kExtensions},
++    {"tabs", syncer::UserSelectableType::kTabs},
++    {"preferences", syncer::UserSelectableType::kPreferences},
++};
++
++std::optional<syncer::UserSelectableType> TypeFromName(const std::string& name) {
++  for (const auto& row : kTypeRows) {
++    if (name == row.name) {
++      return row.type;
++    }
++  }
++  return std::nullopt;
++}
++
++// Skips volatile caches / lock files so the export archive stays lean.
++bool ShouldIncludeInExport(const base::FilePath& path) {
++  static const char* const kSkip[] = {
++      "Cache",        "Code Cache",   "GPUCache",     "DawnCache",
++      "GraphiteDawnCache", "Service Worker", "Crashpad", "Singleton",
++      "component_crx_cache", "GrShaderCache", "ShaderCache"};
++  const std::string value = path.value();
++  for (const char* needle : kSkip) {
++    if (value.find(needle) != std::string::npos) {
++      return false;
++    }
++  }
++  return true;
++}
++
++void DoExport(const base::FilePath& profile_path, const base::FilePath& dest) {
++  zip::ZipWithFilterCallback(profile_path, dest,
++                             base::BindRepeating(&ShouldIncludeInExport));
++}
++
++void DoImportStage(const base::FilePath& profile_path,
++                   const base::FilePath& src) {
++  const base::FilePath pending =
++      profile_path.DirName().Append(FILE_PATH_LITERAL("PendingImport"));
++  base::DeletePathRecursively(pending);
++  base::CreateDirectory(pending);
++  zip::Unzip(src, pending);
++}
++
++}  // namespace
++
++SelfHostSyncHandler::SelfHostSyncHandler(Profile* profile)
++    : profile_(profile) {}
++
++SelfHostSyncHandler::~SelfHostSyncHandler() {
++  if (select_file_dialog_) {
++    select_file_dialog_->ListenerDestroyed();
++  }
++}
++
++void SelfHostSyncHandler::RegisterMessages() {
++  web_ui()->RegisterMessageCallback(
++      "getSelfHostSyncState",
++      base::BindRepeating(&SelfHostSyncHandler::HandleGetState,
++                          base::Unretained(this)));
++  web_ui()->RegisterMessageCallback(
++      "generateSelfHostSyncCode",
++      base::BindRepeating(&SelfHostSyncHandler::HandleGenerateCode,
++                          base::Unretained(this)));
++  web_ui()->RegisterMessageCallback(
++      "setSelfHostSyncType",
++      base::BindRepeating(&SelfHostSyncHandler::HandleSetType,
++                          base::Unretained(this)));
++  web_ui()->RegisterMessageCallback(
++      "exportSelfHostProfile",
++      base::BindRepeating(&SelfHostSyncHandler::HandleExport,
++                          base::Unretained(this)));
++  web_ui()->RegisterMessageCallback(
++      "importSelfHostProfile",
++      base::BindRepeating(&SelfHostSyncHandler::HandleImport,
++                          base::Unretained(this)));
++}
++
++void SelfHostSyncHandler::HandleGetState(const base::ListValue& args) {
++  AllowJavascript();
++  const base::Value& callback_id = args[0];
++
++  syncer::SyncService* sync_service =
++      SyncServiceFactory::GetForProfile(profile_);
++  const bool online = sync_service && sync_service->IsSyncFeatureActive();
++
++  syncer::UserSelectableTypeSet selected;
++  if (sync_service) {
++    selected = sync_service->GetUserSettings()->GetSelectedTypes();
++  }
++
++  base::DictValue types;
++  for (const auto& row : kTypeRows) {
++    types.Set(row.name, selected.Has(row.type));
++  }
++
++  base::DictValue state;
++  state.Set("online", online);
++  state.Set("types", std::move(types));
++  ResolveJavascriptCallback(callback_id, base::Value(std::move(state)));
++}
++
++void SelfHostSyncHandler::HandleGenerateCode(const base::ListValue& args) {
++  AllowJavascript();
++  const base::Value& callback_id = args[0];
++  ResolveJavascriptCallback(
++      callback_id, base::Value(syncer::GenerateSelfHostSyncCode()));
++}
++
++void SelfHostSyncHandler::HandleSetType(const base::ListValue& args) {
++  if (args.size() < 2 || !args[0].is_string() || !args[1].is_bool()) {
++    return;
++  }
++  const std::optional<syncer::UserSelectableType> type =
++      TypeFromName(args[0].GetString());
++  if (!type) {
++    return;
++  }
++  syncer::SyncService* sync_service =
++      SyncServiceFactory::GetForProfile(profile_);
++  if (!sync_service) {
++    return;
++  }
++  syncer::SyncUserSettings* settings = sync_service->GetUserSettings();
++  syncer::UserSelectableTypeSet selected = settings->GetSelectedTypes();
++  if (args[1].GetBool()) {
++    selected.Put(*type);
++  } else {
++    selected.Remove(*type);
++  }
++  settings->SetSelectedTypes(/*sync_everything=*/false, selected);
++}
++
++void SelfHostSyncHandler::HandleExport(const base::ListValue& args) {
++  if (select_file_dialog_) {
++    return;  // A dialog is already open.
++  }
++  pending_is_export_ = true;
++  select_file_dialog_ = ui::SelectFileDialog::Create(this, nullptr);
++  ui::SelectFileDialog::FileTypeInfo type_info;
++  type_info.extensions = {{FILE_PATH_LITERAL("zip")}};
++  type_info.include_all_files = true;
++  select_file_dialog_->SelectFile(
++      ui::SelectFileDialog::SELECT_SAVEAS_FILE, std::u16string(),
++      profile_->GetPath().DirName().Append(
++          FILE_PATH_LITERAL("chromium-profile.zip")),
++      &type_info, 1, FILE_PATH_LITERAL("zip"),
++      web_ui()->GetWebContents()->GetTopLevelNativeWindow());
++}
++
++void SelfHostSyncHandler::HandleImport(const base::ListValue& args) {
++  if (select_file_dialog_) {
++    return;
++  }
++  pending_is_export_ = false;
++  select_file_dialog_ = ui::SelectFileDialog::Create(this, nullptr);
++  ui::SelectFileDialog::FileTypeInfo type_info;
++  type_info.extensions = {{FILE_PATH_LITERAL("zip")}};
++  type_info.include_all_files = true;
++  select_file_dialog_->SelectFile(
++      ui::SelectFileDialog::SELECT_OPEN_FILE, std::u16string(),
++      profile_->GetPath().DirName(), &type_info, 1, FILE_PATH_LITERAL("zip"),
++      web_ui()->GetWebContents()->GetTopLevelNativeWindow());
++}
++
++void SelfHostSyncHandler::FileSelected(const ui::SelectedFileInfo& file,
++                                       int index) {
++  const base::FilePath chosen = file.path();
++  const base::FilePath profile_path = profile_->GetPath();
++  select_file_dialog_ = nullptr;
++  if (pending_is_export_) {
++    base::ThreadPool::PostTask(
++        FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
++        base::BindOnce(&DoExport, profile_path, chosen));
++  } else {
++    base::ThreadPool::PostTaskAndReply(
++        FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
++        base::BindOnce(&DoImportStage, profile_path, chosen),
++        base::BindOnce(&chrome::AttemptRestart));
++  }
++}
++
++void SelfHostSyncHandler::FileSelectionCanceled() {
++  select_file_dialog_ = nullptr;
++}
++
++}  // namespace settings
+--- /dev/null
++++ b/chrome/browser/ui/webui/settings/self_host_sync_handler.h
+@@ -0,0 +1,57 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_WEBUI_SETTINGS_SELF_HOST_SYNC_HANDLER_H_
++#define CHROME_BROWSER_UI_WEBUI_SETTINGS_SELF_HOST_SYNC_HANDLER_H_
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/scoped_refptr.h"
++#include "base/values.h"
++#include "content/public/browser/web_ui_message_handler.h"
++#include "ui/shell_dialogs/select_file_dialog.h"
++
++class Profile;
++
++namespace settings {
++
++// Backs the account-less "Sync settings" section in chrome://settings:
++// status, sync-code generation, per-type toggles, and whole-profile
++// export/import (the operations that need to call into the browser process).
++class SelfHostSyncHandler : public content::WebUIMessageHandler,
++                            public ui::SelectFileDialog::Listener {
++ public:
++  explicit SelfHostSyncHandler(Profile* profile);
++
++  SelfHostSyncHandler(const SelfHostSyncHandler&) = delete;
++  SelfHostSyncHandler& operator=(const SelfHostSyncHandler&) = delete;
++
++  ~SelfHostSyncHandler() override;
++
++  // content::WebUIMessageHandler:
++  void RegisterMessages() override;
++
++ private:
++  // Resolves {online: bool, types: {bookmarks: bool, ...}}.
++  void HandleGetState(const base::ListValue& args);
++  // Resolves a fresh 24-word sync code.
++  void HandleGenerateCode(const base::ListValue& args);
++  // Args: [typeName, enabled]. Updates the synced data types live.
++  void HandleSetType(const base::ListValue& args);
++  // Opens the file dialog to write a whole-profile .zip.
++  void HandleExport(const base::ListValue& args);
++  // Opens the file dialog to pick a .zip, then restarts to apply it.
++  void HandleImport(const base::ListValue& args);
++
++  // ui::SelectFileDialog::Listener:
++  void FileSelected(const ui::SelectedFileInfo& file, int index) override;
++  void FileSelectionCanceled() override;
++
++  const raw_ptr<Profile> profile_;
++  scoped_refptr<ui::SelectFileDialog> select_file_dialog_;
++  bool pending_is_export_ = false;
++};
++
++}  // namespace settings
++
++#endif  // CHROME_BROWSER_UI_WEBUI_SETTINGS_SELF_HOST_SYNC_HANDLER_H_
+--- /dev/null
++++ b/components/sync/service/self_host_sync_code.cc
+@@ -0,0 +1,16 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "components/sync/service/self_host_sync_code.h"
++
++#include "brave/components/brave_sync/crypto/crypto.h"
++
++namespace syncer {
++
++std::string GenerateSelfHostSyncCode() {
++  return brave_sync::crypto::PassphraseFromBytes32(
++      brave_sync::crypto::GetSeed());
++}
++
++}  // namespace syncer
+--- /dev/null
++++ b/components/sync/service/self_host_sync_code.h
+@@ -0,0 +1,18 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef COMPONENTS_SYNC_SERVICE_SELF_HOST_SYNC_CODE_H_
++#define COMPONENTS_SYNC_SERVICE_SELF_HOST_SYNC_CODE_H_
++
++#include <string>
++
++namespace syncer {
++
++// Account-less self-hosted sync: generates a fresh random 24-word BIP39 sync
++// code (identity + encryption passphrase) for starting a new sync chain.
++std::string GenerateSelfHostSyncCode();
++
++}  // namespace syncer
++
++#endif  // COMPONENTS_SYNC_SERVICE_SELF_HOST_SYNC_CODE_H_

@@ -1,10 +1,11 @@
+# nix-shell — dev shell with the patch tooling
 { pkgs ? import <nixpkgs> {} }: pkgs.mkShell {
   nativeBuildInputs = with pkgs; [
+    git
+    gnupatch
     quilt
-
-    (python3.withPackages (ps: with ps; [
-      httplib2
-      six
-    ]))
+    diffutils
+    coreutils
+    bashInteractive
   ];
 }

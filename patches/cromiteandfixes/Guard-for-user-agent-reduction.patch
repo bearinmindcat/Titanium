@@ -1,0 +1,132 @@
+From: csagan5 <32685696+csagan5@users.noreply.github.com>
+Date: Mon, 10 Feb 2020 23:13:13 +0100
+Subject: Guard for user-agent reduction
+
+License: GPL-3.0-only - https://spdx.org/licenses/GPL-3.0-only.html
+---
+--- a/components/embedder_support/user_agent_utils.cc
++++ b/components/embedder_support/user_agent_utils.cc
+@@ -665,6 +665,7 @@ blink::UserAgentMetadata GetUserAgentMet
+   }
+ 
+   // High entropy client hints.
++  if ((true)) return metadata;
+   metadata.brand_full_version_list =
+       GetUserAgentBrandFullVersionListInternal(std::nullopt);
+   metadata.full_version = std::string(version_info::GetVersionNumber());
+@@ -844,6 +845,7 @@ std::string BuildUserAgentFromProduct(co
+ }
+ 
+ std::string BuildModelInfo() {
++  if ((true)) return std::string();
+ #if BUILDFLAG(IS_ANDROID)
+   // Model information is not exposed on Android desktop.
+   if (base::android::device_info::is_desktop()) {
+@@ -886,6 +888,10 @@ std::string GetAndroidOSInfo(
+     IncludeAndroidModel include_android_model) {
+   std::string android_info_str;
+ 
++  // Do not send information about the device.
++  include_android_model = IncludeAndroidModel::Exclude;
++  include_android_build_number = IncludeAndroidBuildNumber::Exclude;
++
+   // Send information about the device.
+   bool semicolon_inserted = false;
+   if (include_android_model == IncludeAndroidModel::Include) {
+--- a/third_party/blink/renderer/platform/runtime_enabled_features.json5
++++ b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+@@ -292,8 +292,8 @@
+     },
+     {
+       // Interest Group JS API/runtimeflag.
+-      name: "AdInterestGroupAPI",
+-      status: "stable",
++      name: "AdInterestGroupAPI", // keep disabled
++      status: "experimental",     // keep disabled
+       origin_trial_feature_name: "AdInterestGroupAPI",
+       implied_by: ["Fledge", "Parakeet"],
+       public: true,
+@@ -703,12 +703,17 @@
+       status: {"Android": "test", "Win": "test", "Mac": "test", "Linux": "test"},
+     },
+     {
+-      name: "AriaRowColIndexText",
++      name: "UserAgentClientHint",
+       status: "stable",
++      base_feature: "UserAgentClientHint",
+     },
+     {
+-      name: "AttributionReporting",
++      name: "AriaRowColIndexText",
+       status: "stable",
++    },
++    {
++      name: "AttributionReporting", // keep disabled
++      status: "experimental",       // keep disabled
+       base_feature: "none",
+       public: true,
+     },
+@@ -3929,6 +3934,11 @@
+       base_feature: "none",
+     },
+     {
++      name: "GlobalPrivacyControl",
++      base_feature_status: "disabled",
++      public: true,
++    },
++    {
+       name: "MediaSessionChapterInformation",
+       status: "stable",
+     },
+@@ -4653,8 +4663,8 @@
+       base_feature: "none",
+     },
+     {
+-      name: "PrivateStateTokens",
+-      status: "stable",
++      name: "PrivateStateTokens", // disabled
++      status: "experimental",     // by default
+       base_feature: "none",
+       public: true,
+     },
+@@ -4809,15 +4819,15 @@
+     // If enabled, both Accept-Language HTTP header and JavaScript getter will
+     // be reduced.
+     {
+-      name: "ReduceAcceptLanguage",
+-      base_feature: "none",
++      name: "ReduceAcceptLanguage",    // keep enabled
++      base_feature: "none",                        // in bromite
+     },
+     // If enabled, the minor version of the User-Agent string will be reduced.
+     // This User-Agent Reduction feature has been enabled starting from M101,
+     // but we still keep this flag for future phase tests.
+     {
+-      name: "ReduceUserAgentMinorVersion",
+-      status: "stable",
++      name: "ReduceUserAgentMinorVersion",                // keep enabled
++      status: "stable",                                   // in bromite
+     },
+     {
+       public: true,
+@@ -6116,16 +6126,16 @@
+       status: "experimental",
+     },
+     {
+-      name: "TopicsAPI",
++      name: "TopicsAPI",       // keep disabled
++      status: "experimental",  // keep disabled
+       base_feature: "none",
+       public: true,
+-      status: "stable",
+     },
+     {
+-      name: "TopicsDocumentAPI",
++      name: "TopicsDocumentAPI", // keep disabled
++      status: "experimental",    // keep disabled
+       base_feature: "none",
+       public: true,
+-      status: "stable",
+     },
+     {
+       // This feature allows calling the Topics API via an image

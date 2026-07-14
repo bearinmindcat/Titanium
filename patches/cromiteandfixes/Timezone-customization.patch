@@ -1,0 +1,469 @@
+From: uazo <uazo@users.noreply.github.com>
+Date: Wed, 30 Sep 2020 07:40:01 +0000
+Subject: Timezone customization
+
+Allow specifying a custom timezone, or using a random one.
+
+See also: https://github.com/bromite/bromite/wiki/TimezoneOverride
+
+Original License: GPL-2.0-or-later - https://spdx.org/licenses/GPL-2.0-or-later.html
+License: GPL-3.0-only - https://spdx.org/licenses/GPL-3.0-only.html
+Require: Content-settings-infrastructure.patch
+---
+--- a/components/content_settings/core/browser/content_settings_pref_provider.cc
++++ b/components/content_settings/core/browser/content_settings_pref_provider.cc
+@@ -113,6 +113,8 @@ void PrefProvider::RegisterProfilePrefs(
+                                      info->GetPrefRegistrationFlags());
+   }
+ 
++  registry->RegisterStringPref(prefs::kContentSettingsCustomTimezone, std::string());
++
+   // Obsolete prefs ----------------------------------------------------------
+ 
+   // These prefs have been removed, but need to be registered so they can
+@@ -198,6 +200,10 @@ PrefProvider::PrefProvider(PrefService*
+     event_args->set_number_of_exceptions(
+         num_exceptions);  // PrefProvider::PrefProvider.
+   });
++
++  custom_timezone_ =
++    prefs_->GetString(
++          prefs::kContentSettingsCustomTimezone);
+ }
+ 
+ PrefProvider::~PrefProvider() {
+@@ -631,4 +637,14 @@ void PrefProvider::SetClockForTesting(co
+   }
+ }
+ 
++void PrefProvider::GetPrefTimezoneOverrideValue(std::string& timezone) const {
++  timezone = custom_timezone_;
++}
++
++void PrefProvider::SetPrefTimezoneOverrideValue(const std::string& timezone) {
++  prefs_->SetString(
++        prefs::kContentSettingsCustomTimezone, timezone);
++  custom_timezone_ = timezone;
++}
++
+ }  // namespace content_settings
+--- a/components/content_settings/core/browser/content_settings_pref_provider.h
++++ b/components/content_settings/core/browser/content_settings_pref_provider.h
+@@ -82,6 +82,9 @@ class PrefProvider : public UserModifiab
+ 
+   ContentSettingsPref* GetPref(ContentSettingsType type) const;
+ 
++  void GetPrefTimezoneOverrideValue(std::string& timezone) const;
++  void SetPrefTimezoneOverrideValue(const std::string& timezone);
++
+  private:
+   friend class DeadlockCheckerObserver;  // For testing.
+ 
+@@ -139,6 +142,7 @@ class PrefProvider : public UserModifiab
+   base::ThreadChecker thread_checker_;
+ 
+   raw_ptr<const base::Clock> clock_;
++  std::string custom_timezone_;
+ };
+ 
+ }  // namespace content_settings
+--- a/components/content_settings/core/browser/content_settings_utils.cc
++++ b/components/content_settings/core/browser/content_settings_utils.cc
+@@ -144,6 +144,11 @@ void GetRendererContentSettingRules(cons
+       ContentSettingToValue(CONTENT_SETTING_BLOCK), ProviderType::kNone,
+       map->IsOffTheRecord()));
+ #endif
++
++  // pass custom timezone value to the render process
++  std::string timezone;
++  map->GetTimezoneOverrideValue(timezone);
++  rules->timezone_override_value = timezone;
+ }
+ 
+ bool IsMorePermissive(ContentSetting a, ContentSetting b) {
+@@ -182,6 +187,42 @@ bool IsConstraintPersistent(const Conten
+   return constraints.session_model() == mojom::SessionModel::DURABLE;
+ }
+ 
++ContentSettingConstraints GetConstraintSessionExpiration(content_settings::mojom::LifetimeMode lifetime_mode) {
++  int lifetime;
++  base::Time now;
++  if (lifetime_mode == content_settings::mojom::LifetimeMode::ONLY_THIS_TIME) {
++    // note: this content settings will be discarded immediately
++    // 1h is used as a magic constant to identify the one-time lifetime mode
++    lifetime = 1;
++  } else if (lifetime_mode == content_settings::mojom::LifetimeMode::UNTIL_ORIGIN_CLOSED) {
++    now = base::Time::Now();
++    lifetime = 24;
++  } else {
++    lifetime = 0;
++  }
++  ContentSettingConstraints c(now);
++  c.set_lifetime(base::Hours(lifetime));
++  c.set_session_model(mojom::SessionModel::USER_SESSION);
++  return c;
++}
++
++bool IsConstraintSessionExpiration(const ContentSettingPatternSource& source,
++                                   content_settings::mojom::LifetimeMode lifetime_mode) {
++  if (source.metadata.session_model() != content_settings::mojom::SessionModel::USER_SESSION)
++    return false;
++
++  mojom::LifetimeMode type;
++  if (source.metadata.lifetime() == base::Hours(24)) {
++    type = content_settings::mojom::LifetimeMode::UNTIL_ORIGIN_CLOSED;
++  } else if (source.metadata.expiration() == (base::Time() + base::Hours(1))) {
++    type = content_settings::mojom::LifetimeMode::ONLY_THIS_TIME;
++  } else {
++    type = content_settings::mojom::LifetimeMode::UNTIL_BROWSER_CLOSED;
++  }
++
++  return lifetime_mode == type;
++}
++
+ bool CanTrackLastVisit(ContentSettingsType type) {
+   DCHECK(WebsiteSettingsRegistry::GetInstance()->Get(type)) << type;
+ 
+@@ -259,10 +300,6 @@ const std::vector<ContentSettingsType>&
+       ContentSettingsType::CAPTURED_SURFACE_CONTROL,
+ #endif
+       ContentSettingsType::KEYBOARD_LOCK,
+-      ContentSettingsType::GEOLOCATION,
+-      ContentSettingsType::GEOLOCATION_WITH_OPTIONS,
+-      ContentSettingsType::MEDIASTREAM_MIC,
+-      ContentSettingsType::MEDIASTREAM_CAMERA,
+       ContentSettingsType::SENSORS,
+       ContentSettingsType::HAND_TRACKING,
+       ContentSettingsType::SMART_CARD_DATA,
+@@ -279,10 +316,6 @@ const std::vector<ContentSettingsType>&
+       ContentSettingsType::CAPTURED_SURFACE_CONTROL,
+ #endif
+       ContentSettingsType::KEYBOARD_LOCK,
+-      ContentSettingsType::GEOLOCATION,
+-      ContentSettingsType::GEOLOCATION_WITH_OPTIONS,
+-      ContentSettingsType::MEDIASTREAM_MIC,
+-      ContentSettingsType::MEDIASTREAM_CAMERA,
+       ContentSettingsType::SENSORS,
+       ContentSettingsType::HAND_TRACKING,
+       ContentSettingsType::AR,
+--- a/components/content_settings/core/browser/host_content_settings_map.cc
++++ b/components/content_settings/core/browser/host_content_settings_map.cc
+@@ -744,6 +744,14 @@ void HostContentSettingsMap::SetClockFor
+   }
+ }
+ 
++void HostContentSettingsMap::GetTimezoneOverrideValue(std::string& custom_timezone) const {
++  GetPrefProvider()->GetPrefTimezoneOverrideValue(custom_timezone);
++}
++
++void HostContentSettingsMap::SetTimezoneOverrideValue(const std::string& custom_timezone) {
++  GetPrefProvider()->SetPrefTimezoneOverrideValue(custom_timezone);
++}
++
+ void HostContentSettingsMap::RecordExceptionMetrics() {
+   auto* content_setting_registry =
+       content_settings::ContentSettingsRegistry::GetInstance();
+--- a/components/content_settings/core/browser/host_content_settings_map.h
++++ b/components/content_settings/core/browser/host_content_settings_map.h
+@@ -423,6 +423,9 @@ class HostContentSettingsMap : public co
+   // Returns the current time of the `clock_`.
+   base::Time Now() const { return clock_->Now(); }
+ 
++  void GetTimezoneOverrideValue(std::string& custom_timezone) const;
++  void SetTimezoneOverrideValue(const std::string& custom_timezone);
++
+  private:
+   friend class base::RefCountedThreadSafe<HostContentSettingsMap>;
+   friend class content_settings::TestUtils;
+--- a/components/content_settings/core/common/content_settings.h
++++ b/components/content_settings/core/common/content_settings.h
+@@ -119,6 +119,7 @@ struct RendererContentSettingRules {
+   bool operator==(const RendererContentSettingRules& other) const;
+ 
+   ContentSettingsForOneType mixed_content_rules;
++  std::string timezone_override_value;
+ };
+ 
+ namespace content_settings {
+--- a/components/content_settings/core/common/content_settings.mojom
++++ b/components/content_settings/core/common/content_settings.mojom
+@@ -87,4 +87,5 @@ struct ContentSettingPatternSource {
+ // TODO(crbug.com/40282541): This should be removed.
+ struct RendererContentSettingRules {
+   array<ContentSettingPatternSource> mixed_content_rules;
++  string timezone_override_value;
+ };
+--- a/components/content_settings/core/common/content_settings_mojom_traits.cc
++++ b/components/content_settings/core/common/content_settings_mojom_traits.cc
+@@ -118,7 +118,8 @@ bool StructTraits<content_settings::mojo
+                   RendererContentSettingRules>::
+     Read(content_settings::mojom::RendererContentSettingRulesDataView data,
+          RendererContentSettingRules* out) {
+-  return data.ReadMixedContentRules(&out->mixed_content_rules);
++  return data.ReadMixedContentRules(&out->mixed_content_rules) &&
++         data.ReadTimezoneOverrideValue(&out->timezone_override_value);
+ }
+ 
+ }  // namespace mojo
+--- a/components/content_settings/core/common/content_settings_mojom_traits.h
++++ b/components/content_settings/core/common/content_settings_mojom_traits.h
+@@ -190,6 +190,11 @@ struct StructTraits<
+     return r.mixed_content_rules;
+   }
+ 
++  static const std::string& timezone_override_value(
++      const RendererContentSettingRules& r) {
++    return r.timezone_override_value;
++  }
++
+   static bool Read(
+       content_settings::mojom::RendererContentSettingRulesDataView data,
+       RendererContentSettingRules* out);
+--- a/components/content_settings/core/common/pref_names.h
++++ b/components/content_settings/core/common/pref_names.h
+@@ -281,6 +281,9 @@ inline constexpr char kNotificationsVibr
+ inline constexpr char kRequestDesktopSiteGlobalSettingUserEnabled[] =
+     "Chrome.RequestDesktopSiteGlobalSetting.UserEnabled";
+ 
++inline constexpr char kContentSettingsCustomTimezone[] =
++    "profile.content_settings.custom_timezone";
++
+ // Window setting for request desktop site. When enabled, we will request
+ // mobile site if the window is narrow.
+ inline constexpr char kDesktopSiteWindowSettingEnabled[] =
+--- a/components/content_settings/renderer/content_settings_agent_impl.h
++++ b/components/content_settings/renderer/content_settings_agent_impl.h
+@@ -23,6 +23,10 @@
+ #include "third_party/blink/public/platform/web_content_settings_client.h"
+ #include "url/origin.h"
+ 
++#include "third_party/blink/renderer/core/timezone/external_timezone_controller.h"
++#include "third_party/icu/source/common/unicode/strenum.h"
++#include "third_party/icu/source/i18n/unicode/timezone.h"
++
+ namespace blink {
+ class WebFrame;
+ class WebURL;
+@@ -143,6 +147,12 @@ class ContentSettingsAgentImpl
+   std::unique_ptr<Delegate> delegate_;
+ 
+   mojo::AssociatedReceiverSet<mojom::ContentSettingsAgent> receivers_;
++
++  std::unique_ptr<blink::ExternalTimeZoneController::TimeZoneOverride> timezone_override_;
++
++  bool UpdateOverrides();
++  bool UpdateTimeZoneOverride(ContentSetting setting, const std::string& timezone_override_value);
++  bool UpdateLocaleOverride(ContentSetting setting);
+ };
+ 
+ }  // namespace content_settings
+--- a/third_party/blink/renderer/core/timezone/build.gni
++++ b/third_party/blink/renderer/core/timezone/build.gni
+@@ -5,4 +5,6 @@
+ blink_core_sources_timezone = [
+   "timezone_controller.cc",
+   "timezone_controller.h",
++  "external_timezone_controller.cc",
++  "external_timezone_controller.h",
+ ]
+--- a/third_party/blink/renderer/core/timezone/timezone_controller.cc
++++ b/third_party/blink/renderer/core/timezone/timezone_controller.cc
+@@ -141,8 +141,6 @@ TimeZoneController::TimeZoneOverrideResu
+ TimeZoneController::SetTimeZoneOverride(const String& timezone_id) {
+   DCHECK(!timezone_id.empty());
+ 
+-  base::AutoLock locker(instance().lock_);
+-
+   if (timezone_id == instance().TimeZoneIdOverride()) {
+     // Do nothing.
+     return {TimeZoneOverrideStatus::kSuccess, nullptr};
+@@ -168,20 +166,16 @@ TimeZoneController::SetTimeZoneOverride(
+ 
+ // static
+ bool TimeZoneController::HasTimeZoneOverride() {
+-  instance().lock_.AssertAcquired();
+   return !instance().override_timezone_id_.empty();
+ }
+ 
+ // static
+ const String& TimeZoneController::TimeZoneIdOverride() {
+-  instance().lock_.AssertAcquired();
+   return instance().override_timezone_id_;
+ }
+ 
+ // static
+ void TimeZoneController::ClearTimeZoneOverride() {
+-  base::AutoLock locker(instance().lock_);
+-
+   DCHECK(HasTimeZoneOverride());
+ 
+   if (!CanonicalEquals(instance().GetHostTimezoneId(),
+@@ -197,8 +191,6 @@ void TimeZoneController::ClearTimeZoneOv
+ void TimeZoneController::ChangeTimeZoneOverride(const String& timezone_id) {
+   DCHECK(!timezone_id.empty());
+ 
+-  base::AutoLock locker(instance().lock_);
+-
+   if (!HasTimeZoneOverride()) {
+     VLOG(1) << "Cannot change if there are no existing timezone override.";
+     return;
+@@ -243,8 +235,6 @@ bool TimeZoneController::SetIcuTimeZoneA
+ void TimeZoneController::OnTimeZoneChange(const String& timezone_id) {
+   DCHECK(IsMainThread());
+ 
+-  base::AutoLock locker(instance().lock_);
+-
+   // Remember requested timezone id so we can set it when timezone
+   // override is removed.
+   instance().host_timezone_id_ = timezone_id;
+@@ -254,7 +244,6 @@ void TimeZoneController::OnTimeZoneChang
+ }
+ 
+ const String& TimeZoneController::GetHostTimezoneId() {
+-  lock_.AssertAcquired();
+   if (host_timezone_id_.IsNull()) {
+     CHECK(base::FeatureList::IsEnabled(kLazyBlinkTimezoneInit));
+     host_timezone_id_ = GetCurrentTimezoneId();
+--- a/third_party/blink/renderer/core/timezone/timezone_controller.h
++++ b/third_party/blink/renderer/core/timezone/timezone_controller.h
+@@ -12,6 +12,7 @@
+ #include "services/device/public/mojom/time_zone_monitor.mojom-blink.h"
+ #include "third_party/blink/renderer/core/core_export.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
++#include "third_party/blink/renderer/core/timezone/external_timezone_controller.h"
+ 
+ namespace blink {
+ 
+@@ -26,6 +27,7 @@ namespace blink {
+ // current host system time zone is assumed.
+ class CORE_EXPORT TimeZoneController final
+     : public device::mojom::blink::TimeZoneMonitorClient {
++ friend ExternalTimeZoneController;
+  public:
+   ~TimeZoneController() override;
+ 
+@@ -61,7 +63,9 @@ class CORE_EXPORT TimeZoneController fin
+       ChangeTimeZoneOverride(timezone_id);
+     }
+ 
+-    ~TimeZoneOverride() { ClearTimeZoneOverride(); }
++    bool clear_at_destruction_ = true;
++
++    ~TimeZoneOverride() { if (clear_at_destruction_) ClearTimeZoneOverride(); }
+   };
+ 
+   struct TimeZoneOverrideResult {
+@@ -96,10 +100,8 @@ class CORE_EXPORT TimeZoneController fin
+   // by Oilpan.
+   mojo::Receiver<device::mojom::blink::TimeZoneMonitorClient> receiver_{this};
+ 
+-  base::Lock lock_;
+-
+-  String host_timezone_id_ GUARDED_BY(lock_);
+-  String override_timezone_id_ GUARDED_BY(lock_);
++  String host_timezone_id_;
++  String override_timezone_id_;
+ };
+ 
+ }  // namespace blink
+--- a/components/content_settings/renderer/content_settings_agent_impl.cc
++++ b/components/content_settings/renderer/content_settings_agent_impl.cc
+@@ -8,8 +8,10 @@
+ 
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
++#include "base/logging.h"
+ #include "base/metrics/histogram_macros.h"
+ #include "base/strings/string_number_conversions.h"
++#include "base/rand_util.h"
+ #include "components/content_settings/core/common/content_settings.h"
+ #include "components/content_settings/core/common/content_settings.mojom.h"
+ #include "components/content_settings/core/common/content_settings_pattern.h"
+@@ -162,6 +164,7 @@ void ContentSettingsAgentImpl::DidCommit
+   // correctly detect that a piece of content flipped from "not blocked" to
+   // "blocked".
+   ClearBlockedContentSettings();
++  UpdateOverrides();
+ 
+   blink::WebLocalFrame* frame = render_frame()->GetWebFrame();
+   if (frame->Parent())
+@@ -339,4 +342,79 @@ void ContentSettingsAgentImpl::ClearBloc
+   cached_storage_permissions_.clear();
+ }
+ 
++bool ContentSettingsAgentImpl::UpdateOverrides() {
++  // Evaluate the content setting rules
++  ContentSetting setting = CONTENT_SETTING_ALLOW;
++
++  if (content_setting_rules_) {
++    setting = GetContentSetting(
++        ContentSettingsType::TIMEZONE_OVERRIDE, setting);
++  }
++  return UpdateTimeZoneOverride(
++      setting, content_setting_rules_->timezone_override_value);
++  //&& UpdateLocaleOverride(setting);
++}
++
++bool ContentSettingsAgentImpl::UpdateTimeZoneOverride(
++    ContentSetting setting,
++    const std::string& timezone_override_value) {
++  // base/i18n/icu_util.cc # 329
++
++  if (setting == CONTENT_SETTING_ALLOW) {
++    // system time
++    if (timezone_override_) {
++      timezone_override_.reset();
++    }
++    return true;
++  }
++
++  // https://chromium-review.googlesource.com/c/chromium/src/+/7031664
++  if (blink::ExternalTimeZoneController::HasTimeZoneOverride()) {
++    DLOG(INFO) << "UpdateTimeZoneOverride: already set";
++    return false;
++  }
++
++  /* timezone_id: third_party/icu/source/i18n/timezone.cpp
++      We first try to lookup the zone ID in our system list.  If this
++      * fails, we try to parse it as a custom string GMT[+-]hh:mm.  If
++      * all else fails, we return GMT, which is probably not what the
++      * user wants, but at least is a functioning TimeZone object.
++      */
++  std::string timezone_id;
++  if (setting == CONTENT_SETTING_BLOCK) {
++    // timezone random
++    UErrorCode ec = U_ZERO_ERROR;
++    int32_t rawOffset = base::RandInt(-12, 11) * 3600 * 1000;
++    icu::StringEnumeration* timezones = icu::TimeZone::createEnumeration(
++        rawOffset);  // Obtain timezones by GMT timezone offset
++    if (timezones) {
++      const char* tzID;
++      int32_t length;
++      if ((tzID = timezones->next(&length, ec)) != NULL) {
++        timezone_id = tzID;
++      }
++      delete timezones;
++    }
++  } else if (setting == CONTENT_SETTING_ASK) {
++    if (timezone_override_value.empty())
++      timezone_id = "Europe/London";
++    else
++      timezone_id = timezone_override_value;
++  }
++
++  timezone_override_.reset();
++  timezone_override_ =
++      blink::ExternalTimeZoneController::SetTimeZoneOverride(timezone_id);
++  if (!timezone_override_) {
++    DLOG(WARNING) << "UpdateTimeZoneOverride - Invalid timezone id '"
++                  << timezone_id << "'";
++    return false;
++  } else {
++    DLOG(INFO)
++        << "UpdateTimeZoneOverride - setting to '"
++        << timezone_id << "'";
++    return true;
++  }
++}
++
+ }  // namespace content_settings

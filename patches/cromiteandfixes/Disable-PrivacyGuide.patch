@@ -1,0 +1,29 @@
+From: csagan5 <32685696+csagan5@users.noreply.github.com>
+Date: Sun, 31 Jul 2022 22:13:11 +0200
+Subject: Disable PrivacyGuide
+
+License: GPL-3.0-only - https://spdx.org/licenses/GPL-3.0-only.html
+---
+--- a/chrome/browser/prefs/browser_prefs.cc
++++ b/chrome/browser/prefs/browser_prefs.cc
+@@ -2074,7 +2074,7 @@ void RegisterProfilePrefs(user_prefs::Pr
+   registry->RegisterBooleanPref(webauthn::pref_names::kAllowWithBrokenCerts,
+                                 false);
+ 
+-  registry->RegisterBooleanPref(prefs::kPrivacyGuideViewed, false);
++  registry->RegisterBooleanPref(prefs::kPrivacyGuideViewed, true);
+ 
+   RegisterProfilePrefsForMigration(registry);
+ 
+--- a/chrome/browser/ui/webui/settings/settings_ui.cc
++++ b/chrome/browser/ui/webui/settings/settings_ui.cc
+@@ -353,8 +353,7 @@ SettingsUI::SettingsUI(content::WebUI* w
+ #endif  // BUILDFLAG(IS_CHROMEOS)
+ 
+   bool show_privacy_guide =
+-      base::FeatureList::IsEnabled(features::kPrivacyGuideForceAvailable) ||
+-      (!ShouldDisplayManagedUi(profile) && !profile->IsChild());
++      false;
+   html_source->AddBoolean("showPrivacyGuide", show_privacy_guide);
+ 
+   html_source->AddBoolean(
