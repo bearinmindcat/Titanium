@@ -7,7 +7,7 @@ set -uo pipefail
 TREE="${1:?usage: tools/export-all.sh <ugc-150-git-tree>}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 [ -d "$TREE/.git" ] || { echo "tree is not a git repo (git init + tag ugc-pristine first)"; exit 1; }
-cd "$TREE"
+cd "$TREE" || exit 1
 git add -A
 # full delta vs the pristine baseline, excluding build output + vendored toolchains + generated credits
 git diff ugc-pristine -- . \
