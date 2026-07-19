@@ -2,6 +2,8 @@
   <img src="assets/titanium-chrome.png" alt="" height="150" align="absmiddle"><img src="assets/titanium-text.png" alt="Titanium" height="110" align="absmiddle">
 </p>
 
+**Work in progress — not ready for use**
+
 Instead of grinding leetcode, I made a browser. Now im unemployed.
 
 ## Why Titanium?
